@@ -1795,28 +1795,7 @@
 										{/if}
 									</div>
 
-									<!-- Employment Status Toggle Buttons (7 Rows) -->
-									<div class="employment-status-section">
-										<label class="status-section-label">{$t('employeeFiles.employmentStatus')}</label>
-										<div class="employment-status-rows">
-											{#each ['Job (With Finger)', 'Remote Job', 'Vacation', 'Resigned'] as status}
-												<div class="status-row">
-													<label class="status-radio-label">
-														<input
-															type="radio"
-															name="employment-status"
-															value={status}
-															bind:group={employmentStatus}
-															on:change={() => openStatusChangeModal(status)}
-															class="status-radio-input"
-														/>
-														<span class="status-radio-button"></span>
-														<span class="status-text">{getEmploymentStatusText(status)}</span>
-													</label>
-												</div>
-											{/each}
-										</div>
-									</div>
+									<!-- Employment status is managed only from HR > Employee Master. -->
 								</div>
 							</div>
 						</div>

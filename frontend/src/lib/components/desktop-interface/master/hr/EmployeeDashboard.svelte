@@ -233,20 +233,48 @@
     let statusModalEffectiveDate = '';
     let statusModalReason = '';
     let statusModalSaving = false;
+    let statusAuditHistory: any[] = [];
+    let statusAuditLoading = false;
 
     const ALL_STATUSES = ['Job (With Finger)', 'Remote Job', 'Vacation', 'Resigned'];
-    const STATUSES_NEEDING_EFFECTIVE_DATE = ['Vacation', 'Resigned'];
-
-    $: statusNeedsEffectiveDate = STATUSES_NEEDING_EFFECTIVE_DATE.includes(statusModalNewStatus);
-
     function openStatusModal(emp: any) {
         statusModalEmpId = emp.id;
         statusModalEmpName = $locale === 'ar' ? (emp.name_ar || emp.name_en) : (emp.name_en || emp.name_ar);
         statusModalCurrentStatus = emp.employment_status || '';
         statusModalNewStatus = emp.employment_status || '';
-        statusModalEffectiveDate = '';
+        statusModalEffectiveDate = new Date().toISOString().split('T')[0];
         statusModalReason = '';
+        statusAuditHistory = [];
         showStatusModal = true;
+        loadStatusAuditHistory(emp.id);
+    }
+
+    async function loadStatusAuditHistory(employeeId: string) {
+        statusAuditLoading = true;
+        try {
+            const { data, error } = await supabase
+                .from('hr_employee_status_audit_log')
+                .select('id, action, old_values, new_values, changed_by, changed_at')
+                .eq('employee_id', employeeId)
+                .order('changed_at', { ascending: false })
+                .limit(20);
+            if (error) throw error;
+            const actorIds = [...new Set((data || []).map((row: any) => row.changed_by).filter(Boolean))];
+            let actorNames: Record<string, string> = {};
+            if (actorIds.length) {
+                const { data: users } = await supabase.from('users').select('id, username').in('id', actorIds);
+                actorNames = Object.fromEntries((users || []).map((user: any) => [user.id, user.username]));
+            }
+            statusAuditHistory = (data || []).map((row: any) => ({
+                ...row,
+                actor_name: row.changed_by ? (actorNames[row.changed_by] || 'Unknown user') : 'System/Legacy'
+            }));
+        } catch (error) {
+            console.error('Failed to load status audit history:', error);
+            statusAuditHistory = [];
+        } finally {
+            statusAuditLoading = false;
+        }
     }
 
     function closeStatusModal() {
@@ -256,26 +284,24 @@
 
     async function saveStatusChange() {
         if (!supabase || !statusModalEmpId || !statusModalNewStatus) return;
-        if (STATUSES_NEEDING_EFFECTIVE_DATE.includes(statusModalNewStatus) && !statusModalEffectiveDate) {
+        if (!statusModalEffectiveDate) {
             alert('Please enter an effective date.');
+            return;
+        }
+        if (!statusModalReason.trim()) {
+            alert('Please enter a reason.');
             return;
         }
         statusModalSaving = true;
         try {
-            const updateData: any = { employment_status: statusModalNewStatus };
-            if (STATUSES_NEEDING_EFFECTIVE_DATE.includes(statusModalNewStatus)) {
-                updateData.employment_status_effective_date = statusModalEffectiveDate;
-                updateData.employment_status_reason = statusModalReason || null;
-            }
-            const { error } = await supabase
-                .from('hr_employee_master')
-                .update(updateData)
-                .eq('id', statusModalEmpId);
+            const { error } = await supabase.rpc('change_employee_status', {
+                p_employee_id: statusModalEmpId,
+                p_new_status: statusModalNewStatus,
+                p_start_date: statusModalEffectiveDate,
+                p_reason: statusModalReason.trim()
+            });
             if (error) throw error;
-            // Update local data without full reload
-            employeeStatusData = employeeStatusData.map(e =>
-                e.id === statusModalEmpId ? { ...e, employment_status: statusModalNewStatus } : e
-            );
+            await loadEmployeeStatusData();
             closeStatusModal();
         } catch (err) {
             console.error('Error updating status:', err);
@@ -1000,7 +1026,6 @@
                 </div>
             </div>
 
-            {#if statusNeedsEffectiveDate}
                 <div class="mb-3 p-3 bg-amber-50 border border-amber-200 rounded-lg">
                     <div class="text-xs text-amber-700 font-semibold uppercase tracking-wide mb-2">⚠️ Effective Date <span class="text-red-500">*</span></div>
                     <input
@@ -1010,7 +1035,7 @@
                     />
                 </div>
                 <div class="mb-4">
-                    <div class="text-xs text-slate-500 font-semibold uppercase tracking-wide mb-1">Reason (optional)</div>
+                    <div class="text-xs text-slate-500 font-semibold uppercase tracking-wide mb-1">Reason <span class="text-red-500">*</span></div>
                     <textarea
                         bind:value={statusModalReason}
                         rows="2"
@@ -1018,7 +1043,26 @@
                         class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-400 resize-none"
                     ></textarea>
                 </div>
-            {/if}
+
+            <div class="mb-4 border-t border-slate-200 pt-3">
+                <div class="text-xs text-slate-500 font-semibold uppercase tracking-wide mb-2">Recent audit history</div>
+                {#if statusAuditLoading}
+                    <div class="text-xs text-slate-400">Loading...</div>
+                {:else if statusAuditHistory.length === 0}
+                    <div class="text-xs text-slate-400">No audited changes yet. Older activity is legacy.</div>
+                {:else}
+                    <div class="max-h-32 overflow-y-auto space-y-2">
+                        {#each statusAuditHistory as entry}
+                            <div class="rounded-lg bg-slate-50 px-3 py-2 text-xs">
+                                <div class="font-semibold text-slate-700">
+                                    {entry.old_values?.status || 'None'} → {entry.new_values?.status || 'Deleted'}
+                                </div>
+                                <div class="text-slate-500">{entry.actor_name} · {new Date(entry.changed_at).toLocaleString()}</div>
+                            </div>
+                        {/each}
+                    </div>
+                {/if}
+            </div>
 
             <div class="flex gap-3">
                 <button
@@ -1028,7 +1072,7 @@
                 >Cancel</button>
                 <button
                     on:click={saveStatusChange}
-                    disabled={statusModalSaving || statusModalNewStatus === statusModalCurrentStatus || (statusNeedsEffectiveDate && !statusModalEffectiveDate)}
+                    disabled={statusModalSaving || statusModalNewStatus === statusModalCurrentStatus || !statusModalEffectiveDate || !statusModalReason.trim()}
                     class="flex-1 px-4 py-2 bg-green-600 text-white rounded-lg font-semibold hover:bg-green-700 transition-colors disabled:opacity-50"
                 >{statusModalSaving ? 'Saving...' : 'Save'}</button>
             </div>

@@ -165,6 +165,8 @@
     let modalWeekday = 0;
     let editingVersionId: number | null = null;
     let editingDateVersionIds: number[] = [];
+    let shiftAuditHistory: any[] = [];
+    let shiftAuditLoading = false;
 
     let slotTime12: Array<{
         startHour: string; startMinute: string; startPeriod: string;
@@ -647,6 +649,34 @@
 
     // ---- OPEN MODAL ----
 
+    async function loadShiftAuditHistory(employeeId: string) {
+        shiftAuditLoading = true;
+        shiftAuditHistory = [];
+        try {
+            const { data, error: auditError } = await supabase
+                .from('hr_shift_audit_log')
+                .select('id, table_name, action, old_values, new_values, changed_by, changed_at')
+                .eq('employee_id', employeeId)
+                .order('changed_at', { ascending: false })
+                .limit(30);
+            if (auditError) throw auditError;
+            const actorIds = [...new Set((data || []).map((row: any) => row.changed_by).filter(Boolean))];
+            let actorNames: Record<string, string> = {};
+            if (actorIds.length) {
+                const { data: users } = await supabase.from('users').select('id, username').in('id', actorIds);
+                actorNames = Object.fromEntries((users || []).map((user: any) => [user.id, user.username]));
+            }
+            shiftAuditHistory = (data || []).map((row: any) => ({
+                ...row,
+                actor_name: row.changed_by ? (actorNames[row.changed_by] || 'Unknown user') : 'System/Legacy'
+            }));
+        } catch (auditError) {
+            console.error('Failed to load shift audit history:', auditError);
+        } finally {
+            shiftAuditLoading = false;
+        }
+    }
+
     function openRegularModal(row: RegularRow) {
         selectedEmployeeId = row.employee_id;
         editingDateVersionIds = [];
@@ -656,7 +686,7 @@
         modalDateTo = '';
         // Pre-fill with current shift times as a starting point
         modalSlots = row.slots.length > 0 ? row.slots.map(s => ({ ...s })) : [{ slot_order: 1, shift_start_time: '09:00', shift_start_buffer: 3, shift_end_time: '17:00', shift_end_buffer: 3, is_shift_overlapping_next_day: false, working_hours: 8, allowed_late_start_minutes: 5, allowed_early_end_minutes: 0 }];
-        syncSlotTimeTo12h(); showModal = true;
+        syncSlotTimeTo12h(); showModal = true; loadShiftAuditHistory(row.employee_id);
     }
 
     function openWeekdayModal(row: WeekdayRow, weekday?: number) {
@@ -669,14 +699,14 @@
         // Pre-fill with current shift times if exists
         const entry = row.weekdaySlots[modalWeekday];
         modalSlots = entry && entry.slots.length > 0 ? entry.slots.map(s => ({ ...s })) : [{ slot_order: 1, shift_start_time: '09:00', shift_start_buffer: 3, shift_end_time: '17:00', shift_end_buffer: 3, is_shift_overlapping_next_day: false, working_hours: 8, allowed_late_start_minutes: 5, allowed_early_end_minutes: 0 }];
-        syncSlotTimeTo12h(); showModal = true;
+        syncSlotTimeTo12h(); showModal = true; loadShiftAuditHistory(row.employee_id);
     }
 
     function openDateWiseAddModal(emp: EmployeeForSelection) {
         selectedEmployeeId = emp.id; editingVersionId = null; editingDateVersionIds = [];
         const today = new Date().toISOString().split('T')[0]; modalDateFrom = today; modalDateTo = today;
         modalSlots = [{ slot_order: 1, shift_start_time: '09:00', shift_start_buffer: 3, shift_end_time: '17:00', shift_end_buffer: 3, is_shift_overlapping_next_day: false, working_hours: 8, allowed_late_start_minutes: 5, allowed_early_end_minutes: 0 }];
-        syncSlotTimeTo12h(); showEmployeeSelectModal = false; showModal = true;
+        syncSlotTimeTo12h(); showEmployeeSelectModal = false; showModal = true; loadShiftAuditHistory(emp.id);
     }
 
     function openDateWiseEditModal(row: DateWiseRow) {
@@ -689,9 +719,10 @@
         modalSlots = row.slots.length > 0 ? row.slots.map(slot => ({ ...slot })) : [{ slot_order: 1, shift_start_time: '09:00', shift_start_buffer: 3, shift_end_time: '17:00', shift_end_buffer: 3, is_shift_overlapping_next_day: false, working_hours: 8, allowed_late_start_minutes: 5, allowed_early_end_minutes: 0 }];
         syncSlotTimeTo12h();
         showModal = true;
+        loadShiftAuditHistory(row.employee_id);
     }
 
-    function closeModal() { showModal = false; selectedEmployeeId = null; editingVersionId = null; editingDateVersionIds = []; modalSlots = []; slotTime12 = []; }
+    function closeModal() { showModal = false; selectedEmployeeId = null; editingVersionId = null; editingDateVersionIds = []; modalSlots = []; slotTime12 = []; shiftAuditHistory = []; }
 
     // ---- SAVE ----
 
@@ -1601,6 +1632,24 @@
                 {#if modalSlots.length > 1}
                     <div class="text-right font-black text-emerald-800">Total: {totalHours.toFixed(2)} {$t('common.hrs')}</div>
                 {/if}
+
+                <div class="border-t border-slate-200 pt-4">
+                    <div class="text-xs font-black uppercase tracking-wide text-slate-500 mb-2">Recent audit history</div>
+                    {#if shiftAuditLoading}
+                        <div class="text-xs text-slate-400">Loading...</div>
+                    {:else if shiftAuditHistory.length === 0}
+                        <div class="text-xs text-slate-400">No audited changes yet. Older activity is legacy.</div>
+                    {:else}
+                        <div class="max-h-40 overflow-y-auto space-y-2">
+                            {#each shiftAuditHistory as entry}
+                                <div class="rounded-lg bg-slate-50 px-3 py-2 text-xs">
+                                    <div class="font-semibold text-slate-700 capitalize">{entry.action} · {entry.table_name.replaceAll('_', ' ')}</div>
+                                    <div class="text-slate-500">{entry.actor_name} · {new Date(entry.changed_at).toLocaleString()}</div>
+                                </div>
+                            {/each}
+                        </div>
+                    {/if}
+                </div>
             </div>
             <div class="px-6 py-4 bg-slate-50 border-t flex justify-end gap-3" class:mobile-shift-footer={mobile}>
                 <button class="px-5 py-2.5 text-sm font-bold text-slate-600 hover:text-slate-800 rounded-xl hover:bg-slate-200 transition" on:click={closeModal}>{$t('common.cancel') || 'Cancel'}</button>

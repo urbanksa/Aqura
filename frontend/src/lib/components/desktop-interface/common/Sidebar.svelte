@@ -119,6 +119,7 @@
 	import ManageAdminUsers from '$lib/components/desktop-interface/settings/user/ManageAdminUsers.svelte';
 	import ManageMasterAdmin from '$lib/components/desktop-interface/settings/user/ManageMasterAdmin.svelte';
 	import EmployeeMaster from '$lib/components/desktop-interface/master/hr/EmployeeMaster.svelte';
+	import BoardingTransfer from '$lib/components/desktop-interface/master/hr/BoardingTransfer.svelte';
 	import BiometricExport from '$lib/components/desktop-interface/master/hr/BiometricExport.svelte';
 	import LinkID from '$lib/components/desktop-interface/master/hr/LinkID.svelte';
 	import FingerprintTransactions from '$lib/components/desktop-interface/master/hr/FingerprintTransactions.svelte';
@@ -319,7 +320,7 @@
 		'EXPENSE_TRACKER': 'reports.expenseTracker', 'SALES_REPORT': 'reports.salesReport',
 		'MONTHLY_BREAKDOWN': 'nav.monthlyBreakdown', 'OVERDUES_REPORT': 'nav.overdues',
 		'VENDOR_PAYMENTS': 'reports.vendorPayments', 'POS_REPORT': 'nav.pos',
-		'EMPLOYEE_MASTER': 'nav.employeeMaster',
+		'EMPLOYEE_MASTER': 'nav.employeeMaster', 'BOARDING_TRANSFER': 'Boarding/Transfer',
 		'ASSIGN_POSITIONS': 'nav.assignPositions', 'LINK_ID': 'nav.linkID',
 		'EMPLOYEE_FILES': 'nav.employeeFiles', 'PROCESS_FINGERPRINT': 'nav.processFingerprint',
 		'SALARY_AND_WAGE': 'nav.salaryAndWage', 'SALARY_STATEMENT': 'nav.salaryStatement', 'SHIFTS': 'nav.shifts', 'SHIFT_AND_DAY_OFF': 'nav.shiftAndLeave',
@@ -993,6 +994,30 @@
 			componentName: 'EmployeeMaster',
 			icon: '👥',
 			size: { width: 1300, height: 760 },
+			position: {
+				x: 130 + (Math.random() * 100),
+				y: 90 + (Math.random() * 100)
+			},
+			resizable: true,
+			minimizable: true,
+			maximizable: true,
+			closable: true
+		});
+		showHRSubmenu = false;
+	}
+
+	function openBoardingTransfer() {
+		collapseAllMenus();
+		const windowId = generateWindowId('boarding-transfer');
+		const instanceNumber = Math.floor(Math.random() * 1000) + 1;
+
+		openWindow({
+			id: windowId,
+			title: `Boarding/Transfer #${instanceNumber}`,
+			component: BoardingTransfer,
+			componentName: 'BoardingTransfer',
+			icon: '🔄',
+			size: { width: 1100, height: 700 },
 			position: {
 				x: 130 + (Math.random() * 100),
 				y: 90 + (Math.random() * 100)
@@ -2323,6 +2348,7 @@ function openApprovalCenter() {
 			'VENDOR_PAYMENTS': openVendorPendingPayments,
 			'POS_REPORT': openPOSReport,
 			'EMPLOYEE_MASTER': openEmployeeMaster,
+			'BOARDING_TRANSFER': openBoardingTransfer,
 			'LINK_ID': openLinkID,
 			'EMPLOYEE_FILES': openEmployeeFiles,
 			'PROCESS_FINGERPRINT': openProcessFingerprint,
@@ -5671,6 +5697,14 @@ function openApprovalCenter() {
 							<button class="submenu-item" on:click={openEmployeeMaster}>
 								<span class="menu-icon">👥</span>
 								<span class="menu-text">{t('nav.employeeMaster')}</span>
+							</button>
+						</div>
+					{/if}
+					{#if isButtonAllowed('EMPLOYEE_MASTER')}
+						<div class="submenu-item-container">
+							<button class="submenu-item" on:click={openBoardingTransfer}>
+								<span class="menu-icon">🔄</span>
+								<span class="menu-text">Boarding/Transfer</span>
 							</button>
 						</div>
 					{/if}
