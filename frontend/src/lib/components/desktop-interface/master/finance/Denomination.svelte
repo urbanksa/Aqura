@@ -84,6 +84,7 @@
 	let users: any[] = [];
 	let savedTransactions: any[] = [];
 	let payToCreditTransactions: any[] = [];
+	let deletingPayToCreditId = '';
 	let payToCreditSlipUrl = '';
 	let payToCreditSlipTitle = '';
 	let showPayToCreditProcess = false;
@@ -1787,6 +1788,27 @@
 		if (!error) payToCreditTransactions = data || [];
 	}
 
+	async function deletePayToCreditTransaction(transaction: any) {
+		if (!isMasterAdmin || deletingPayToCreditId) return;
+		if (!confirm(`Delete this Pay to Credit transaction for ${creditVendorName(transaction.request_label)} (${Number(transaction.extracted_amount).toFixed(2)} SAR)? This cannot be undone.`)) return;
+		deletingPayToCreditId = transaction.id;
+		try {
+			const response = await fetch('/api/pay-to-credit', {
+				method: 'DELETE',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ id: transaction.id })
+			});
+			const result = await response.json();
+			if (!response.ok || !result.success) throw new Error(result.error || 'Unable to delete transaction.');
+			payToCreditTransactions = payToCreditTransactions.filter((item) => item.id !== transaction.id);
+			showNotification('Pay to Credit transaction deleted.');
+		} catch (error: any) {
+			showNotification(error.message || 'Unable to delete transaction.', 'error');
+		} finally {
+			deletingPayToCreditId = '';
+		}
+	}
+
 	function openPayToCreditSlip(transaction: any) {
 		if (!transaction?.photo_url) return;
 		payToCreditSlipUrl = transaction.photo_url;
@@ -3105,7 +3127,14 @@
 												<td class="amount-cell">{Number(transaction.extracted_amount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} SAR</td>
 												<td>{#if transaction.photo_url}<button type="button" class="slip-view-icon" title="View payment slip" aria-label="View payment slip" on:click={() => openPayToCreditSlip(transaction)}>👁</button>{:else}<span>—</span>{/if}</td>
 												<td class="date-cell">{new Date(transaction.completed_at || transaction.created_at).toLocaleDateString()}</td>
-								<td><button type="button" class="pay-credit-process-btn" on:click={() => openPayToCreditProcess(transaction)}>Process</button></td>
+								<td><div class="pay-credit-actions">
+									<button type="button" class="pay-credit-process-btn" disabled={deletingPayToCreditId === transaction.id} on:click={() => openPayToCreditProcess(transaction)}>Process</button>
+									{#if isMasterAdmin}
+										<button type="button" class="pay-credit-delete-btn" title={deletingPayToCreditId === transaction.id ? 'Deleting...' : 'Delete transaction'} aria-label={deletingPayToCreditId === transaction.id ? 'Deleting transaction' : 'Delete transaction'} aria-busy={deletingPayToCreditId === transaction.id} disabled={!!deletingPayToCreditId} on:click={() => deletePayToCreditTransaction(transaction)}>
+											<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M9 6V4h6v2M5 6l1 14h12l1-14M10 10v6M14 10v6" /></svg>
+										</button>
+									{/if}
+								</div></td>
 											</tr>
 										{/each}
 									</tbody>
@@ -3796,6 +3825,32 @@
 		color: white;
 		font-size: 1rem;
 		cursor: pointer;
+	}
+
+	.pay-credit-actions {
+		display: flex;
+		gap: 6px;
+		align-items: center;
+	}
+
+	.pay-credit-delete-btn {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 26px;
+		height: 26px;
+		flex-shrink: 0;
+		border: 1px solid #dc2626;
+		border-radius: 5px;
+		background: #dc2626;
+		color: white;
+		padding: 0;
+		cursor: pointer;
+	}
+
+	.pay-credit-delete-btn:disabled {
+		opacity: 0.6;
+		cursor: wait;
 	}
 
 	.pay-credit-process-btn {
