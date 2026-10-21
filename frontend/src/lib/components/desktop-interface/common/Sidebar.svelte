@@ -117,6 +117,7 @@
 	const PendingScanRequests = lazyWindowComponent('PendingScanRequests', () => import('$lib/components/desktop-interface/settings/PendingScanRequests.svelte'));
 	const AIChatGuide = lazyWindowComponent('AIChatGuide', () => import('$lib/components/desktop-interface/settings/AIChatGuide.svelte'));
 	const ErpProductManager = lazyWindowComponent('ErpProductManager', () => import('$lib/components/desktop-interface/settings/ErpProductManager.svelte'));
+	const PolosysProductCreation = lazyWindowComponent('PolosysProductCreation', () => import('$lib/components/desktop-interface/settings/PolosysProductCreation.svelte'));
 	const ErpCredentials = lazyWindowComponent('ErpCredentials', () => import('$lib/components/desktop-interface/settings/ErpCredentials.svelte'));
 	const DrawerActionMonitor = lazyWindowComponent('DrawerActionMonitor', () => import('$lib/components/desktop-interface/settings/DrawerActionMonitor.svelte'));
 	const PCLockGuard = lazyWindowComponent('PCLockGuard', () => import('$lib/components/desktop-interface/settings/PCLockGuard.svelte'));
@@ -2259,6 +2260,22 @@ function openApprovalCenter() {
 		});
 		showControlsSubmenu = false;
 		showControlsManageSubmenu = false;
+	}
+
+	function openPolosysProductCreation() {
+		if (!$currentUser?.isMasterAdmin) return;
+		openWindow({
+			id: 'polosys-product-creation',
+			title: 'ERP Product Creation',
+			component: PolosysProductCreation,
+			componentName: 'PolosysProductCreation',
+			icon: '📦',
+			size: { width: 1060, height: 760 },
+			minSize: { width: 540, height: 440 },
+			popOutEnabled: false
+		});
+		showSystemSubmenu = false;
+		showSystemManageSubmenu = false;
 	}
 
 	function openErpProductManager() {
@@ -6910,6 +6927,14 @@ function openApprovalCenter() {
 							<button class="submenu-item" on:click={openErpProductManager}>
 								<span class="menu-icon">🏭</span>
 								<span class="menu-text">{t('nav.erpProductManager')}</span>
+							</button>
+						</div>
+					{/if}
+					{#if $currentUser?.isMasterAdmin}
+						<div class="submenu-item-container">
+							<button class="submenu-item" on:click={openPolosysProductCreation}>
+								<span class="menu-icon">📦</span>
+								<span class="menu-text">ERP Product Creation</span>
 							</button>
 						</div>
 					{/if}

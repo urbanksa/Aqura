@@ -796,6 +796,7 @@
 	}
 
 	function getPageTitle(path, locale = null) {
+		if (path === '/mobile-interface/erp-products' || path === '/mobile-interface/erp-products/') return locale === 'ar' ? 'منتجات ERP' : 'ERP Products';
 		// Main pages
 		if (path === '/mobile-interface' || path === '/mobile-interface/') return getTranslation('mobile.dashboard');
 		if (path === '/mobile-interface/tasks' || path === '/mobile-interface/tasks/') return getTranslation('mobile.tasks');
@@ -1225,6 +1226,14 @@
 		
 		<!-- Global Bottom Navigation Bar -->
 		<nav class="bottom-nav">
+			{#if $currentUser?.isMasterAdmin}
+				<div class="nav-item-menu-container">
+					<a href="/mobile-interface/erp-products" class="nav-item" class:active={$page.url.pathname.startsWith('/mobile-interface/erp-products')} on:click={() => { showOrdersMenu = false; showTasksMenu = false; showEmergenciesMenu = false; showHRMenu = false; showStockMenu = false; showFinanceMenu = false; }} aria-label={$currentLocale === 'ar' ? 'منتجات ERP' : 'ERP Products'}>
+						<div class="nav-icon"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m21 8-9-5-9 5v8l9 5 9-5V8Z"/><path d="m3 8 9 5 9-5M12 13v8M7.5 5.5l9 5"/></svg></div>
+						<span class="nav-label">{$currentLocale === 'ar' ? 'منتجات ERP' : 'ERP Products'}</span>
+					</a>
+				</div>
+			{/if}
 			<!-- Tasks Menu Button -->
 			<div class="nav-item-menu-container">
 				<button class="nav-item tasks-btn" on:click={() => { showTasksMenu = !showTasksMenu; showOrdersMenu = false; showHRMenu = false; showEmergenciesMenu = false; showStockMenu = false; showFinanceMenu = false; }} class:active={showTasksMenu || $page.url.pathname.startsWith('/mobile-interface/tasks') || $page.url.pathname.startsWith('/mobile-interface/assignments') || $page.url.pathname.startsWith('/mobile-interface/branch-performance')}>
