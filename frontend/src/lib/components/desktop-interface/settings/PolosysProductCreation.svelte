@@ -13,7 +13,8 @@
 	type ExtraUnit = { key: number; unitId: string; quantity: number | undefined; barcode: string };
 	type BranchPrice = { branch_id: number; branch_name: string; purchase_price: number; sales_price: number; multi_units?: { unit_id: string; barcode: string; quantity_in_base_units: number; price: number | undefined }[]; fetched_at: string; saved_at: string };
 	type ProductData = { name: string; arabic_name: string; barcode: string; purchase_price?: number; sales_price?: number; selected_branch_id?: number; branch_prices?: Record<string, BranchPrice>; multi_units: { unit_id: string; quantity_in_base_units: number; barcode: string; price?: number }[] };
-	type SavedProduct = { id: string; product_group_id: string; base_unit_id: string; data: ProductData; created_at: string; updated_at: string };
+	type SavedProduct = { id: string; product_group_id: string; base_unit_id: string; data: ProductData; created_at: string; updated_at: string; creation_status?: Record<string, { status: string; branch_name?: string; error?: string }> };
+	const creationStatusLabels: Record<string, string> = { filling: 'Filling — not saved', saving: 'Saving — awaiting confirmation', prepared_unsaved: 'Prepared — NOT SAVED', created: 'Created', failed: 'Failed', needs_verification: 'Needs verification', not_created: 'Not created' };
 	let editingProduct: SavedProduct | null = null;
 	let activeView: 'create' | 'view' | 'manage' = 'create';
 	let editReturnView: 'view' | 'manage' = 'view';
@@ -30,6 +31,7 @@
 	let savedProducts: SavedProduct[] = [];
 	let loadingProducts = false;
 	let tablePricingBusy = false;
+	let tablePriceController: PolosysTablePrices;
 	let priceBranchFilter = '';
 	let priceBranches: { id: number; name: string }[] = [];
 	let loadingPriceBranches = false;
@@ -129,7 +131,7 @@
 		productsError = '';
 		try {
 			let query = supabase.from('Polosys_products')
-				.select('id, product_group_id, base_unit_id, data, created_at, updated_at', { count: 'exact' });
+				.select('id, product_group_id, base_unit_id, data, created_at, updated_at, creation_status', { count: 'exact' });
 			if (appliedProductSearch) {
 				const literalSearch = appliedProductSearch.replace(/[\\%_]/g, '\\$&');
 				query = query.ilike('data->>name', `%${literalSearch}%`);
@@ -627,7 +629,7 @@
 		</div>
 		{#if activeView === 'view' && !mobile}
 			<section class="products-view" aria-label="Saved products">
-				<PolosysTablePrices disabled={loadingProducts || productCount === 0} bind:busy={tablePricingBusy} on:saved={(event) => updateBranchPrices(event.detail.productId, event.detail.branchPrice, event.detail.selectedBranchId)}>
+				<PolosysTablePrices bind:this={tablePriceController} disabled={loadingProducts || productCount === 0} bind:busy={tablePricingBusy} on:saved={(event) => updateBranchPrices(event.detail.productId, event.detail.branchPrice, event.detail.selectedBranchId)}>
 				<svelte:fragment slot="toolbar">
 				<h3 class="saved-product-count">Products ({productCount})</h3>
 				<form class="product-search" role="search" on:submit|preventDefault={() => searchProducts()}>
@@ -646,10 +648,11 @@
 				{:else if !savedProducts.length}<p class="empty">{appliedProductSearch ? 'No products match this name.' : 'No products saved yet. Use Create Product to add one.'}</p>
 				{:else}
 					<div class="table-scroll saved-products-table">
-						<table><thead><tr><th scope="col">#</th><th>Product name</th><th>Arabic name</th><th>Product group</th><th>Base unit</th><th>Barcode</th><th>Standard purchase price</th><th>Standard sales price</th><th>Branch prices</th><th>Multi Units</th><th>Actions</th></tr></thead>
+						<table><thead><tr><th scope="col">#</th><th>Product name</th><th>Arabic name</th><th>Product group</th><th>Base unit</th><th>Barcode</th><th>Standard purchase price</th><th>Standard sales price</th><th>Branch prices</th><th>Multi Units</th><th>Creation status</th><th>Actions</th></tr></thead>
 						<tbody>{#each savedProducts as product, index (product.id)}
 							{@const productBranches = Object.values(product.data.branch_prices || {}).filter(branch => !priceBranchFilter || String(branch.branch_id) === priceBranchFilter)}
 							{@const shownBasePrices = priceBranchFilter ? productBranches[0] : product.data}
+							{@const creationStates = Object.entries(product.creation_status || {}).filter(([branchId]) => !priceBranchFilter || branchId === priceBranchFilter)}
 							<tr>
 								<td>{productPage * productPageSize + index + 1}</td>
 								<td>{product.data.name}</td><td lang="ar" dir="rtl">{product.data.arabic_name}</td>
@@ -678,7 +681,8 @@
 										</details>
 									{:else}—{/if}
 								</td>
-								<td><button type="button" disabled={loadingProducts || tablePricingBusy} on:click={() => editProduct(product)}>Edit</button></td>
+								<td>{#each creationStates as [branchId, state]}<div class="saved-branch-summary" title={state.error || ''}><strong>{state.branch_name || priceBranchOptions.find(branch => String(branch.id) === branchId)?.name || `Branch ${branchId}`}</strong><small>{creationStatusLabels[state.status] || 'Needs verification'}</small></div>{/each}{#if !creationStates.length}<small>Not created</small>{/if}</td>
+								<td><div class="row-actions"><button type="button" disabled={loadingProducts || tablePricingBusy} on:click={() => editProduct(product)}>Edit</button><button type="button" disabled={loadingProducts || tablePricingBusy} on:click={() => tablePriceController.showProduct(product.id, product.data.name, priceBranchFilter)}>Get Price</button></div></td>
 							</tr>
 						{/each}</tbody></table>
 					</div>
@@ -690,6 +694,7 @@
 </div>
 
 <style>
+	.row-actions{display:flex;gap:8px;white-space:nowrap}
 	.camera-scan-button{display:inline-flex;align-items:center;gap:8px}
 	.manage-scan{display:flex;align-items:end;gap:12px;margin-bottom:20px;flex-wrap:wrap}.manage-scan label{flex:1;min-width:220px}.manage-scan button{white-space:nowrap}
 	.copyable-barcode{cursor:copy;white-space:nowrap}.copyable-barcode:focus-visible{outline:2px solid #0891b2;outline-offset:3px;border-radius:2px}.clipboard-status{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}

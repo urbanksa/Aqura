@@ -11,6 +11,8 @@
 	export let busy = false;
 	const dispatch = createEventDispatcher<{ saved: { productId: string; branchPrice: BranchPrice; selectedBranchId: number } }>();
 	let open = false;
+	let targetProductId = '';
+	let targetProductName = '';
 	let branches: { id: number; name: string }[] = [];
 	let branchId = '';
 	let loading = false;
@@ -32,19 +34,37 @@
 	let processedBefore = 0;
 	let savedProductIds: string[] = [];
 	let finished = false;
+	let priceWarnings: string[] = [];
 	$: failures = Object.values(batchErrors);
 	$: busy = loading || running;
 	const validPrice = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0;
 
 	function resetRun() {
+		priceWarnings = [];
 		batchErrors = {}; error = ''; message = ''; batchProducts = []; batchLoaded = false;
 		batchNumber = 1; afterId = ''; snapshotTime = ''; hasMore = false; overallCount = 0;
 		processedBefore = 0; savedProductIds = []; finished = false; stopRequested = false;
 	}
 
 	async function show() {
+		if (busy) return;
+		if (targetProductId) { open = false; resetRun(); }
+		targetProductId = ''; targetProductName = '';
 		open = !open;
-		if (!open || branches.length) return;
+		if (open) await loadBranches();
+	}
+
+	export async function showProduct(productId: string, productName: string, selectedBranch = '') {
+		if (busy || disabled) return;
+		resetRun();
+		targetProductId = productId; targetProductName = productName;
+		open = true;
+		await loadBranches();
+		branchId = branches.some(branch => String(branch.id) === selectedBranch) ? selectedBranch : '';
+	}
+
+	async function loadBranches() {
+		if (branches.length) return;
 		loading = true; error = '';
 		try {
 			const response = await fetch('/api/polosys-products/branch-prices');
@@ -80,6 +100,7 @@
 					if (!snapshotTime) snapshotTime = new Date().toISOString();
 					let query = supabase.from('Polosys_products').select('id, data', { count: 'exact' })
 						.lte('created_at', snapshotTime).order('id').limit(batchSize);
+					if (targetProductId) query = query.eq('id', targetProductId);
 					if (afterId) query = query.gt('id', afterId);
 					const { data, error: readError, count } = await query;
 					if (readError) throw readError;
@@ -99,8 +120,11 @@
 							const expected = product.data.multi_units || [];
 							if (result.branchId !== selectedBranch || result.barcode !== product.data.barcode.trim() || !validPrice(result.purchasePrice) || !validPrice(result.salesPrice)
 								|| typeof result.fetchedAt !== 'string' || !Number.isFinite(Date.parse(result.fetchedAt))
-								|| !Array.isArray(result.multiUnits) || result.multiUnits.length !== expected.length
-								|| expected.some(unit => !result.multiUnits.some((price: UnitPrice) => price.unit_id === unit.unit_id && price.barcode === unit.barcode.trim() && price.quantity_in_base_units === unit.quantity_in_base_units && validPrice(price.price)))) throw new Error('Prices did not match all product units.');
+								|| !Array.isArray(result.multiUnits) || result.multiUnits.length > expected.length
+								|| result.multiUnits.some((price: UnitPrice) => !price || !validPrice(price.price)
+									|| result.multiUnits.filter((item: UnitPrice) => item?.unit_id === price.unit_id).length !== 1
+									|| !expected.some(unit => price.unit_id === unit.unit_id && price.barcode === unit.barcode.trim() && price.quantity_in_base_units === unit.quantity_in_base_units))) throw new Error('Prices did not match the product units.');
+							if (Array.isArray(result.warnings)) priceWarnings = [...new Set([...priceWarnings, ...result.warnings.filter((warning: unknown): warning is string => typeof warning === 'string').map((warning: string) => `${product.data.name}: ${warning}`)])];
 							fetched.push({ product, prices: result });
 						} catch (failure) { recordFailure(product, failure); }
 						finally { completed += 1; }
@@ -142,12 +166,14 @@
 		<slot name="toolbar" />
 	<button type="button" disabled={disabled || busy} aria-expanded={open} on:click={show}>Get Price</button>
 	</div>
+	{#if finished && priceWarnings.length}<p role="status">Available prices saved. {priceWarnings.join(' ')}</p>{/if}
 	{#if open}
 		<div class="pricing-panel">
+			{#if targetProductId}<p>Get prices for <strong>{targetProductName}</strong></p>{/if}
 			{#if loading}<p role="status">Loading branches…</p>{:else}
 				<div class="controls">
 					<label>Branch<select bind:value={branchId} disabled={busy} on:change={resetRun}><option value="">Select branch</option>{#each branches as branch}<option value={String(branch.id)}>{branch.name}</option>{/each}</select></label>
-					<button type="button" class="start" disabled={disabled || busy || !branchId} on:click={run}>{finished ? 'Fetch & save again' : batchLoaded || afterId ? 'Resume / retry' : 'Fetch & auto-save all'}</button>
+					<button type="button" class="start" disabled={disabled || busy || !branchId} on:click={run}>{finished ? 'Fetch & save again' : batchLoaded || afterId ? 'Resume / retry' : targetProductId ? 'Fetch & auto-save' : 'Fetch & auto-save all'}</button>
 					{#if running}<button type="button" disabled={stopRequested} on:click={() => stopRequested = true}>{stopRequested ? 'Stopping after batch…' : 'Stop after this batch'}</button>{/if}
 				</div>
 				{#if !branches.length}<p>No active ERP branches are configured.</p>{/if}

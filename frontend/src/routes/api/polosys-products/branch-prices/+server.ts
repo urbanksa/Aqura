@@ -56,17 +56,19 @@ export const POST: RequestHandler = async ({ cookies, request }) => {
 				return json({ error: 'Fetch valid prices for this product and branch before saving.' }, { status: 400, headers });
 			}
 			const suppliedUnits: UnitPrice[] = Array.isArray(body.multiUnits) ? body.multiUnits : [];
-			if (suppliedUnits.length !== additionalUnits.length || additionalUnits.some(unit => suppliedUnits.filter(price => price?.unit_id === unit.unit_id && price.barcode === unit.barcode.trim() && price.quantity_in_base_units === unit.quantity_in_base_units && validPrice(price.price)).length !== 1)) {
-				return json({ error: 'Fetch and fill prices for every additional unit before saving.' }, { status: 400, headers });
+			if (suppliedUnits.length > additionalUnits.length || suppliedUnits.some(price => !price || !validPrice(price.price)
+				|| suppliedUnits.filter(item => item?.unit_id === price.unit_id).length !== 1
+				|| !additionalUnits.some(unit => price.unit_id === unit.unit_id && price.barcode === unit.barcode.trim() && price.quantity_in_base_units === unit.quantity_in_base_units))) {
+				return json({ error: 'The supplied additional-unit prices do not match this product.' }, { status: 400, headers });
 			}
-			const multiUnitPrices: UnitPrice[] = additionalUnits.map(unit => {
+			const multiUnitPrices: UnitPrice[] = additionalUnits.filter(unit => suppliedUnits.some(item => item.unit_id === unit.unit_id)).map(unit => {
 				const price = suppliedUnits.find(item => item.unit_id === unit.unit_id)!;
 				return { unit_id: unit.unit_id, barcode: unit.barcode.trim(), quantity_in_base_units: unit.quantity_in_base_units, price: price.price };
 			});
 			const branchPrice = { branch_id: branchId, erp_branch_id: erpBranchId, branch_name: connection.branch_name,
 				purchase_price: body.purchasePrice, sales_price: body.salesPrice, multi_units: multiUnitPrices, fetched_at: body.fetchedAt, saved_at: new Date().toISOString() };
 			const updatedData = { ...product.data, purchase_price: body.purchasePrice, sales_price: body.salesPrice,
-				multi_units: additionalUnits.map(unit => ({ ...unit, price: multiUnitPrices.find(price => price.unit_id === unit.unit_id)!.price })),
+				multi_units: additionalUnits.map(unit => ({ ...unit, price: multiUnitPrices.find(price => price.unit_id === unit.unit_id)?.price })),
 				selected_branch_id: branchId, branch_prices: { ...(product.data.branch_prices || {}), [String(branchId)]: branchPrice } };
 			const { data: saved, error: saveError } = await db.from('Polosys_products').update({ data: updatedData })
 				.eq('id', product.id).eq('updated_at', product.updated_at).select('id').maybeSingle();
@@ -106,26 +108,43 @@ export const POST: RequestHandler = async ({ cookies, request }) => {
 		const salesPrice = rows[0].sales_price == null ? NaN : Number(rows[0].sales_price);
 		if (!validPrice(purchasePrice) || !validPrice(salesPrice)) return json({ error: 'The branch did not return valid standard prices.' }, { status: 422, headers });
 		const multiUnits: UnitPrice[] = [];
+		const warnings: string[] = [];
 		if (additionalUnits.length) {
-			const productId = Number(rows[0].product_id);
-			if (!Number.isSafeInteger(productId) || productId <= 0) throw new Error('The ERP product identity is invalid.');
 			const barcodeList = additionalUnits.map(unit => `N'${unit.barcode.trim().replace(/'/g, "''")}'`).join(',');
-			// Match the exact barcode and factor in ProductUnits. Sprice is the
-			// normal unit selling price used by mobile Price Checker/Offer Cost Manager.
-			const unitRows = await query(`SELECT pu.BarCode AS barcode, pu.MultiFactor AS quantity_in_base_units,
-				pu.Sprice AS price, pb.ProductBatchID AS batch_id
+			// New catalog units can be independent base products in the old ERP.
+			// Resolve each exact barcode across the branch, regardless of its old
+			// parent product or factor. Never multiply by the new catalog quantity.
+			const unitRows = await query(`SELECT pu.BarCode AS barcode, pu.Sprice AS price,
+				pb.ProductBatchID AS batch_id, pb.ProductID AS product_id, 0 AS source_priority
 				FROM ProductUnits pu INNER JOIN ProductBatches pb
 				ON pu.ProductBatchID = pb.ProductBatchID AND pu.BranchID = pb.BranchID
-				WHERE pb.BranchID = ${erpBranchId} AND pb.ProductID = ${productId} AND pu.BarCode IN (${barcodeList})
-				ORDER BY pb.ProductBatchID DESC, pu.Sprice DESC`);
+				WHERE pb.BranchID = ${erpBranchId} AND pu.BarCode IN (${barcodeList})
+				UNION ALL
+				SELECT matched.barcode, pb.StdSalesPrice AS price,
+				pb.ProductBatchID AS batch_id, pb.ProductID AS product_id, 1 AS source_priority
+				FROM ProductBatches pb CROSS APPLY (
+					SELECT CAST(pb.MannualBarcode AS NVARCHAR(100)) AS barcode
+					UNION SELECT CAST(pb.AutoBarcode AS NVARCHAR(100))
+					UNION SELECT CAST(pbc.Barcode AS NVARCHAR(100)) FROM ProductBarcodes pbc
+					WHERE pbc.ProductBatchID = pb.ProductBatchID
+				) matched
+				WHERE pb.BranchID = ${erpBranchId} AND matched.barcode IN (${barcodeList})
+				ORDER BY source_priority, batch_id DESC, price DESC`);
 			for (const unit of additionalUnits) {
-				const match = unitRows.find(row => String(row.barcode).trim() === unit.barcode.trim() && Number(row.quantity_in_base_units) === unit.quantity_in_base_units);
+				const matches = unitRows.filter(row => String(row.barcode).trim() === unit.barcode.trim());
+				if (new Set(matches.map(row => String(row.product_id))).size > 1) {
+					return json({ error: `Additional-unit barcode ${unit.barcode} matches conflicting ERP products in this branch. Resolve the barcode conflict before saving prices.` }, { status: 409, headers });
+				}
+				const match = matches.find(row => row.price != null && validPrice(Number(row.price)));
 				const price = match?.price == null ? NaN : Number(match.price);
-				if (!validPrice(price)) return json({ error: `No matching sales price was found for additional-unit barcode ${unit.barcode} with quantity ${unit.quantity_in_base_units}. Check this unit in the selected branch.` }, { status: 422, headers });
+				if (!validPrice(price)) {
+					warnings.push(`No sales price found for barcode ${unit.barcode} as a base product or additional unit in this branch. Its price was left unset.`);
+					continue;
+				}
 				multiUnits.push({ unit_id: unit.unit_id, barcode: unit.barcode.trim(), quantity_in_base_units: unit.quantity_in_base_units, price });
 			}
 		}
-		return json({ branchId, barcode, purchasePrice, salesPrice, multiUnits, fetchedAt: new Date().toISOString() }, { headers });
+		return json({ branchId, barcode, purchasePrice, salesPrice, multiUnits, warnings, fetchedAt: new Date().toISOString() }, { headers });
 	} catch (error) {
 		const message = error instanceof Error && ['TimeoutError', 'AbortError'].includes(error.name) ? 'The branch ERP timed out. Please retry.' : error instanceof Error ? error.message : 'Unable to process branch prices.';
 		return json({ error: message }, { status: 400, headers });
