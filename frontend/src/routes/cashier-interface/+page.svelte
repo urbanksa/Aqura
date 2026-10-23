@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount, onDestroy, tick } from 'svelte';
+	import { readInactivityLock, resetInactivityLock, persistInactivityLock } from '$lib/utils/inactivityLock';
 	import { beforeNavigate } from '$app/navigation';
 	import CashierLogin from '$lib/components/cashier-interface/CashierLogin.svelte';
 	import CashierInterface from '$lib/components/cashier-interface/CashierInterface.svelte';
@@ -40,6 +41,17 @@
 	let reauthError = '';
 	let reauthLoading = false;
 
+	function restoreInactivityLock() {
+		if (showInactivityPrompt) return;
+		if (!isLoggedIn || !cashierUser) return;
+		if (readInactivityLock('cashier', String(cashierUser.id), INACTIVITY_TIMEOUT_MS).locked) lockForInactivity();
+	}
+
+	beforeNavigate((navigation) => {
+		restoreInactivityLock();
+		if (isLoggedIn && showInactivityPrompt) navigation.cancel();
+	});
+
 	function clearInactivityTimer() {
 		if (inactivityTimer) {
 			clearTimeout(inactivityTimer);
@@ -47,20 +59,29 @@
 		}
 	}
 
+	function lockForInactivity() {
+		clearInactivityTimer();
+		if (cashierUser) persistInactivityLock('cashier', String(cashierUser.id));
+		showInactivityPrompt = true;
+		showReauthentication = false;
+		reauthDigits = ['', '', '', '', '', ''];
+		reauthError = '';
+	}
+
 	function scheduleInactivityPrompt() {
 		clearInactivityTimer();
 		if (!isLoggedIn || showInactivityPrompt) return;
-		lastActivityReset = Date.now();
-		inactivityTimer = setTimeout(() => {
-			showInactivityPrompt = true;
-			showReauthentication = false;
-			reauthDigits = ['', '', '', '', '', ''];
-			reauthError = '';
-		}, INACTIVITY_TIMEOUT_MS);
+		const state = readInactivityLock('cashier', String(cashierUser!.id), INACTIVITY_TIMEOUT_MS);
+		if (state.locked) { lockForInactivity(); return; }
+		lastActivityReset = state.lastActivity;
+		inactivityTimer = setTimeout(lockForInactivity, Math.max(0, INACTIVITY_TIMEOUT_MS - (Date.now() - lastActivityReset)));
 	}
 
 	function recordCashierActivity() {
-		if (!isLoggedIn || showInactivityPrompt || Date.now() - lastActivityReset < 1000) return;
+		if (!isLoggedIn || showInactivityPrompt) return;
+		if (readInactivityLock('cashier', String(cashierUser!.id), INACTIVITY_TIMEOUT_MS).locked) { lockForInactivity(); return; }
+		if (Date.now() - lastActivityReset < 1000) return;
+		resetInactivityLock('cashier', String(cashierUser!.id));
 		scheduleInactivityPrompt();
 	}
 
@@ -85,6 +106,8 @@
 			scheduleInactivityPrompt();
 		});
 
+		window.addEventListener('pageshow', restoreInactivityLock);
+		document.addEventListener('visibilitychange', restoreInactivityLock);
 		window.addEventListener('pointerdown', recordCashierActivity, true);
 		window.addEventListener('pointermove', recordCashierActivity, true);
 		window.addEventListener('keydown', recordCashierActivity, true);
@@ -98,6 +121,8 @@
 		stopCashierSessionGuard();
 		clearInactivityTimer();
 		if (typeof window !== 'undefined') {
+			window.removeEventListener('pageshow', restoreInactivityLock);
+			document.removeEventListener('visibilitychange', restoreInactivityLock);
 			window.removeEventListener('pointerdown', recordCashierActivity, true);
 			window.removeEventListener('pointermove', recordCashierActivity, true);
 			window.removeEventListener('keydown', recordCashierActivity, true);
@@ -115,7 +140,7 @@
 	// interface, it's how the language toggle applies its change, so `to` won't resolve to an
 	// in-app route and must not be treated as "navigating away".
 	beforeNavigate(({ to, type }) => {
-		if (type === 'leave' || !to) return;
+		if (showInactivityPrompt || type === 'leave' || !to) return;
 		const stayingInCashier = to.url.pathname.startsWith('/cashier-interface');
 		if (isLoggedIn && !stayingInCashier) {
 			releaseWindowsCashierSession();
@@ -145,6 +170,7 @@
 
 	function handleLoginSuccess(event: CustomEvent) {
 		cashierUser = event.detail.user;
+		resetInactivityLock('cashier', String(cashierUser.id));
 		selectedBranch = event.detail.branch;
 		const sessionToken = event.detail.sessionToken ?? null;
 		isLoggedIn = true;
@@ -202,6 +228,7 @@
 			if (!response.ok) {
 				throw new Error('invalid');
 			}
+			resetInactivityLock('cashier', String(cashierUser!.id));
 			showInactivityPrompt = false;
 			showReauthentication = false;
 			reauthDigits = ['', '', '', '', '', ''];

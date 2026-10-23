@@ -1,4 +1,5 @@
 import { writable } from "svelte/store";
+import { resetInactivityLock } from "./inactivityLock";
 import { browser } from "$app/environment";
 import { supabase } from "./supabase";
 import { autoSubscribePush, autoUnsubscribePush } from "./pushNotifications";
@@ -520,6 +521,7 @@ export class PersistentAuthService {
 
       // Save session to device
       console.log("🔐 [PersistentAuth] Saving user session to device...");
+      if (userSession.interfaceType) resetInactivityLock(userSession.interfaceType, String(userSession.id));
       await this.saveUserSession(userSession);
       console.log("✅ [PersistentAuth] User session saved to device");
 

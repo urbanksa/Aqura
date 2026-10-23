@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy, tick } from 'svelte';
-	import { goto } from '$app/navigation';
+	import { readInactivityLock, resetInactivityLock, persistInactivityLock } from '$lib/utils/inactivityLock';
+	import { goto, beforeNavigate } from '$app/navigation';
 	import { windowManager } from '$lib/stores/windowManager';
 	import { openWindow } from '$lib/utils/windowManagerUtils';
 	import { localeData, t, currentLocale } from '$lib/i18n';
@@ -148,25 +149,45 @@
 		event.stopPropagation();
 	}
 
+	function restoreInactivityLock() {
+		if (showInactivityPrompt) return;
+		if (!$currentUser) return;
+		if (readInactivityLock('desktop', String($currentUser.id), INACTIVITY_TIMEOUT_MS).locked) lockForInactivity();
+	}
+
+	beforeNavigate((navigation) => {
+		restoreInactivityLock();
+		if (!!$currentUser && showInactivityPrompt) navigation.cancel();
+	});
+
 	function clearInactivityTimer() {
 		if (inactivityTimer) clearTimeout(inactivityTimer);
 		inactivityTimer = null;
 	}
 
+	function lockForInactivity() {
+		clearInactivityTimer();
+		if ($currentUser) persistInactivityLock('desktop', String($currentUser.id));
+		showInactivityPrompt = true;
+		showReauthentication = false;
+		reauthDigits = ['', '', '', '', '', ''];
+		reauthError = '';
+	}
+
 	function scheduleInactivityPrompt() {
 		clearInactivityTimer();
 		if (!$currentUser || showInactivityPrompt) return;
-		lastActivityReset = Date.now();
-		inactivityTimer = setTimeout(() => {
-			showInactivityPrompt = true;
-			showReauthentication = false;
-			reauthDigits = ['', '', '', '', '', ''];
-			reauthError = '';
-		}, INACTIVITY_TIMEOUT_MS);
+		const state = readInactivityLock('desktop', String($currentUser!.id), INACTIVITY_TIMEOUT_MS);
+		if (state.locked) { lockForInactivity(); return; }
+		lastActivityReset = state.lastActivity;
+		inactivityTimer = setTimeout(lockForInactivity, Math.max(0, INACTIVITY_TIMEOUT_MS - (Date.now() - lastActivityReset)));
 	}
 
 	function recordDesktopActivity() {
-		if (!$currentUser || showInactivityPrompt || Date.now() - lastActivityReset < 1000) return;
+		if (!$currentUser || showInactivityPrompt) return;
+		if (readInactivityLock('desktop', String($currentUser!.id), INACTIVITY_TIMEOUT_MS).locked) { lockForInactivity(); return; }
+		if (Date.now() - lastActivityReset < 1000) return;
+		resetInactivityLock('desktop', String($currentUser!.id));
 		scheduleInactivityPrompt();
 	}
 
@@ -379,6 +400,8 @@
 	onMount(async () => {
 		mounted = true;
 		scheduleInactivityPrompt();
+		window.addEventListener('pageshow', restoreInactivityLock);
+		document.addEventListener('visibilitychange', restoreInactivityLock);
 		window.addEventListener('pointerdown', recordDesktopActivity, true);
 		window.addEventListener('pointermove', recordDesktopActivity, true);
 		window.addEventListener('keydown', recordDesktopActivity, true);
@@ -404,6 +427,8 @@
 	onDestroy(() => {
 		clearInactivityTimer();
 		if (typeof window !== 'undefined') {
+			window.removeEventListener('pageshow', restoreInactivityLock);
+			document.removeEventListener('visibilitychange', restoreInactivityLock);
 			window.removeEventListener('pointerdown', recordDesktopActivity, true);
 			window.removeEventListener('pointermove', recordDesktopActivity, true);
 			window.removeEventListener('keydown', recordDesktopActivity, true);
@@ -428,6 +453,7 @@
 		try {
 			const { data, error } = await supabase.rpc('verify_quick_access_code', { p_code: code });
 			if (error || !data?.success || String(data.user?.id) !== String($currentUser.id)) throw new Error('invalid');
+			resetInactivityLock('desktop', String($currentUser!.id));
 			showInactivityPrompt = false;
 			showReauthentication = false;
 			reauthDigits = ['', '', '', '', '', ''];

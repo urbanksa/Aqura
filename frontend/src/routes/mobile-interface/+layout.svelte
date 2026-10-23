@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { onMount, onDestroy, tick } from 'svelte';
+	import { readInactivityLock, resetInactivityLock, persistInactivityLock } from '$lib/utils/inactivityLock';
 	import { page } from '$app/stores';
-	import { goto } from '$app/navigation';
+	import { goto, beforeNavigate } from '$app/navigation';
 	import { currentUser, isAuthenticated, persistentAuthService } from '$lib/utils/persistentAuth';
 	import { interfacePreferenceService } from '$lib/utils/interfacePreference';
 	import { supabase } from '$lib/utils/supabase';
@@ -96,6 +97,17 @@
 
 	$: inactivityEligible = !isLoading && $isAuthenticated && !!$currentUser && $page.url.pathname !== '/mobile-interface/login';
 
+	function restoreInactivityLock() {
+		if (showInactivityPrompt) return;
+		if (!inactivityEligible || !$currentUser) return;
+		if (readInactivityLock('mobile', String($currentUser.id), INACTIVITY_TIMEOUT_MS).locked) lockForInactivity();
+	}
+
+	beforeNavigate((navigation) => {
+		restoreInactivityLock();
+		if (inactivityEligible && showInactivityPrompt) navigation.cancel();
+	});
+
 	function clearInactivityTimer() {
 		if (inactivityTimer) clearTimeout(inactivityTimer);
 		inactivityTimer = null;
@@ -103,6 +115,7 @@
 
 	function lockForInactivity() {
 		clearInactivityTimer();
+		if ($currentUser) persistInactivityLock('mobile', String($currentUser.id));
 		showInactivityPrompt = true;
 		showReauthentication = false;
 		reauthDigits = ['', '', '', '', '', ''];
@@ -112,12 +125,17 @@
 	function scheduleInactivityPrompt() {
 		clearInactivityTimer();
 		if (!inactivityEligible || showInactivityPrompt) return;
-		lastActivityReset = Date.now();
-		inactivityTimer = setTimeout(lockForInactivity, INACTIVITY_TIMEOUT_MS);
+		const state = readInactivityLock('mobile', String($currentUser!.id), INACTIVITY_TIMEOUT_MS);
+		if (state.locked) { lockForInactivity(); return; }
+		lastActivityReset = state.lastActivity;
+		inactivityTimer = setTimeout(lockForInactivity, Math.max(0, INACTIVITY_TIMEOUT_MS - (Date.now() - lastActivityReset)));
 	}
 
 	function recordMobileActivity() {
-		if (!inactivityEligible || showInactivityPrompt || Date.now() - lastActivityReset < 1000) return;
+		if (!inactivityEligible || showInactivityPrompt) return;
+		if (readInactivityLock('mobile', String($currentUser!.id), INACTIVITY_TIMEOUT_MS).locked) { lockForInactivity(); return; }
+		if (Date.now() - lastActivityReset < 1000) return;
+		resetInactivityLock('mobile', String($currentUser!.id));
 		scheduleInactivityPrompt();
 	}
 
@@ -158,6 +176,7 @@
 				body: JSON.stringify({ quickAccessCode: code, expectedUserId: String($currentUser.id) })
 			});
 			if (!response.ok) throw new Error('invalid');
+			resetInactivityLock('mobile', String($currentUser!.id));
 			showInactivityPrompt = false;
 			showReauthentication = false;
 			reauthDigits = ['', '', '', '', '', ''];
@@ -216,6 +235,8 @@
 	}
 
 	onMount(() => {
+		window.addEventListener('pageshow', restoreInactivityLock);
+		document.addEventListener('visibilitychange', restoreInactivityLock);
 		window.addEventListener('pointerdown', recordMobileActivity, true);
 		window.addEventListener('pointermove', recordMobileActivity, true);
 		window.addEventListener('keydown', recordMobileActivity, true);
@@ -325,6 +346,8 @@
 	onDestroy(() => {
 		clearInactivityTimer();
 		if (typeof window !== 'undefined') {
+			window.removeEventListener('pageshow', restoreInactivityLock);
+			document.removeEventListener('visibilitychange', restoreInactivityLock);
 			window.removeEventListener('pointerdown', recordMobileActivity, true);
 			window.removeEventListener('pointermove', recordMobileActivity, true);
 			window.removeEventListener('keydown', recordMobileActivity, true);
