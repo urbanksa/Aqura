@@ -4,10 +4,12 @@
 	import { locale } from '$lib/i18n';
 	import { currentUser } from '$lib/utils/persistentAuth';
 
+	type ErpProvider = 'polosys' | 'vikin';
+	let erpProvider: ErpProvider | '' = '';
 	let activeTab: 'create' | 'manage' | 'branches' = 'create';
 	let documentSection: 'create' | 'manage' = 'create';
 	let supabase: any = null;
-	let companies: Array<{ id: number; name_ar: string; name_en: string; owner_emails?: string[]; owner_whatsapp_numbers?: string[]; created_at: string }> = [];
+	let companies: Array<{ id: number; name_ar: string; name_en: string; owner_emails?: string[]; owner_whatsapp_numbers?: string[]; erp_provider?: ErpProvider | null; created_at: string }> = [];
 	let companyBranches: Array<{ id: number; company_id: number; name_ar: string; name_en: string; location_ar: string; location_en: string }> = [];
 	let showForm = false;
 	let editingCompanyId: number | null = null;
@@ -386,7 +388,7 @@
 		errorMessage = '';
 		const { data, error } = await supabase
 			.from('company_master')
-			.select('id, name_ar, name_en, owner_emails, owner_whatsapp_numbers, created_at')
+			.select('id, name_ar, name_en, owner_emails, owner_whatsapp_numbers, erp_provider, created_at')
 			.order('created_at', { ascending: false });
 		if (error) errorMessage = $locale === 'ar' ? 'فشل تحميل الشركات / المؤسسات' : (error.message || 'Failed to load companies / establishments');
 		else companies = data || [];
@@ -397,16 +399,18 @@
 		editingCompanyId = null;
 		nameAr = '';
 		nameEn = '';
+		erpProvider = '';
 		ownerEmails = [''];
 		ownerWhatsAppNumbers = [''];
 		errorMessage = '';
 		showForm = true;
 	}
 
-	function openEditForm(company: { id: number; name_ar: string; name_en: string; owner_emails?: string[]; owner_whatsapp_numbers?: string[] }) {
+	function openEditForm(company: { id: number; name_ar: string; name_en: string; owner_emails?: string[]; owner_whatsapp_numbers?: string[]; erp_provider?: ErpProvider | null }) {
 		editingCompanyId = company.id;
 		nameAr = company.name_ar;
 		nameEn = company.name_en;
+		erpProvider = company.erp_provider || '';
 		ownerEmails = company.owner_emails?.length ? [...company.owner_emails] : [''];
 		ownerWhatsAppNumbers = company.owner_whatsapp_numbers?.length ? [...company.owner_whatsapp_numbers] : [''];
 		errorMessage = '';
@@ -419,6 +423,7 @@
 		editingCompanyId = null;
 		nameAr = '';
 		nameEn = '';
+		erpProvider = '';
 		ownerEmails = [''];
 		ownerWhatsAppNumbers = [''];
 		errorMessage = '';
@@ -461,14 +466,16 @@
 				p_name_ar: arabicName,
 				p_name_en: englishName,
 				p_owner_emails: cleanedOwnerEmails,
-				p_owner_whatsapp_numbers: cleanedOwnerWhatsAppNumbers
+				p_owner_whatsapp_numbers: cleanedOwnerWhatsAppNumbers,
+				p_erp_provider: erpProvider || null
 			})
 			: await supabase.rpc('update_company', {
 				p_company_id: editingCompanyId,
 				p_name_ar: arabicName,
 				p_name_en: englishName,
 				p_owner_emails: cleanedOwnerEmails,
-				p_owner_whatsapp_numbers: cleanedOwnerWhatsAppNumbers
+				p_owner_whatsapp_numbers: cleanedOwnerWhatsAppNumbers,
+				p_erp_provider: erpProvider || null
 			});
 		saving = false;
 		if (error) {
@@ -545,6 +552,14 @@
 							<span>{$locale === 'ar' ? 'الاسم بالإنجليزية' : 'English Name'} <strong>*</strong></span>
 							<input bind:value={nameEn} placeholder={$locale === 'ar' ? 'أدخل الاسم بالإنجليزية' : 'Enter English name'} disabled={saving} required />
 						</label>
+						<label>
+							<span>{$locale === 'ar' ? 'مزود نظام الموارد' : 'ERP Provider'}</span>
+							<select bind:value={erpProvider} disabled={saving}>
+								<option value="">{$locale === 'ar' ? 'غير مرتبط' : 'Not linked'}</option>
+								<option value="polosys">Polosys</option>
+								<option value="vikin">Vikin</option>
+							</select>
+						</label>
 						<div class="contact-list-field">
 							<div class="contact-list-heading"><span>{$locale === 'ar' ? 'البريد الإلكتروني للمالك' : 'Owner Emails'} <strong>*</strong></span><button type="button" on:click={addOwnerEmail} disabled={saving}>+ {$locale === 'ar' ? 'إضافة بريد' : 'Add Email'}</button></div>
 							{#each ownerEmails as email, index}
@@ -568,16 +583,16 @@
 
 				<div class="table-wrap">
 					<table>
-						<thead><tr><th>#</th><th>{$locale === 'ar' ? 'اسم الشركة / المؤسسة' : 'Company / Establishment Name'}</th><th>{$locale === 'ar' ? 'بريد المالك' : 'Owner Email'}</th><th>{$locale === 'ar' ? 'واتساب المالك' : 'Owner WhatsApp'}</th><th>{$locale === 'ar' ? 'تاريخ الإنشاء' : 'Created'}</th><th>{$locale === 'ar' ? 'الإجراء' : 'Action'}</th></tr></thead>
+						<thead><tr><th>#</th><th>{$locale === 'ar' ? 'اسم الشركة / المؤسسة' : 'Company / Establishment Name'}</th><th>{$locale === 'ar' ? 'مزود نظام الموارد' : 'ERP Provider'}</th><th>{$locale === 'ar' ? 'بريد المالك' : 'Owner Email'}</th><th>{$locale === 'ar' ? 'واتساب المالك' : 'Owner WhatsApp'}</th><th>{$locale === 'ar' ? 'تاريخ الإنشاء' : 'Created'}</th><th>{$locale === 'ar' ? 'الإجراء' : 'Action'}</th></tr></thead>
 						<tbody>
 							{#if loading}
-								<tr><td colspan="6" class="empty-row">{$locale === 'ar' ? 'جارٍ التحميل...' : 'Loading...'}</td></tr>
+								<tr><td colspan="7" class="empty-row">{$locale === 'ar' ? 'جارٍ التحميل...' : 'Loading...'}</td></tr>
 							{:else if companies.length === 0}
-								<tr><td colspan="6" class="empty-row">{$locale === 'ar' ? 'لم يتم إنشاء شركات / مؤسسات بعد.' : 'No companies / establishments created yet.'}</td></tr>
+								<tr><td colspan="7" class="empty-row">{$locale === 'ar' ? 'لم يتم إنشاء شركات / مؤسسات بعد.' : 'No companies / establishments created yet.'}</td></tr>
 							{:else}
 								{#each companies as company, index (company.id)}
 									<tr>
-										<td>{index + 1}</td><td dir={$locale === 'ar' ? 'rtl' : 'ltr'}>{$locale === 'ar' ? company.name_ar : company.name_en}</td><td>{company.owner_emails?.join(', ') || '—'}</td><td>{company.owner_whatsapp_numbers?.join(', ') || '—'}</td><td>{formatDate(company.created_at)}</td>
+										<td>{index + 1}</td><td dir={$locale === 'ar' ? 'rtl' : 'ltr'}>{$locale === 'ar' ? company.name_ar : company.name_en}</td><td>{company.erp_provider === 'polosys' ? 'Polosys' : company.erp_provider === 'vikin' ? 'Vikin' : ($locale === 'ar' ? 'غير مرتبط' : 'Not linked')}</td><td>{company.owner_emails?.join(', ') || '—'}</td><td>{company.owner_whatsapp_numbers?.join(', ') || '—'}</td><td>{formatDate(company.created_at)}</td>
 										<td><button class="edit-button" on:click={() => openEditForm(company)}>{$locale === 'ar' ? 'تعديل' : 'Edit'}</button></td>
 									</tr>
 								{/each}
@@ -1314,7 +1329,7 @@
 	.add-button { width: 34px; height: 34px; border: 0; border-radius: 7px; background: #13bfd0; color: white; font-size: 22px; cursor: pointer; }
 	.inline-form { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; align-items: end; padding: 14px 16px; background: #f8fafc; border-bottom: 1px solid #e2e8f0; }
 	.inline-form label { display: flex; flex-direction: column; gap: 6px; color: #475569; font-size: 12px; font-weight: 600; }
-	.inline-form input { padding: 9px 10px; border: 1px solid #cbd5e1; border-radius: 6px; background: white; color: #0f172a; }
+	.inline-form input, .inline-form select { padding: 9px 10px; border: 1px solid #cbd5e1; border-radius: 6px; background: white; color: #0f172a; }
 	.inline-form > .contact-list-field { grid-column: span 2; }
 	.contact-list-field { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
 	.contact-list-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: #475569; font-size: 12px; font-weight: 700; }

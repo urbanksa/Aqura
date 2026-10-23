@@ -108,9 +108,27 @@ export const GET: RequestHandler = async ({ cookies, url }) => {
 			const activeIds = new Set((activeUsers || []).map((activeUser) => activeUser.id));
 			return json({ success: true, users: employees.filter((employee) => activeIds.has(employee.user_id)).slice(0, 30) });
 		}
-		const { data, error } = await db().from('assistant_workflow_tasks').select('*').eq('assigned_to', user.id).in('status', ['pending', 'in_progress', 'failed']).order('created_at', { ascending: false });
+		const taskDb = db();
+		const { data, error } = await taskDb.from('assistant_workflow_tasks').select('*').eq('assigned_to', user.id).in('status', ['pending', 'in_progress', 'failed']).order('created_at', { ascending: false });
 		if (error) throw error;
-		return json({ success: true, tasks: data || [] });
+		const isVikinReversal = (task: { task_type?: string; payload?: { entry_kind?: string } | null }) =>
+			task.task_type === 'salary_vikin_adjustment_jv' && task.payload?.entry_kind === 'reversal';
+		const dependencyIds = [...new Set((data || []).filter(isVikinReversal)
+			.map(task => String(task.payload?.depends_on_task_id || ''))
+			.filter(id => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)))];
+		const dependencyStatus = new Map<string, string>();
+		if (dependencyIds.length) {
+			// Completed originals are absent from My Tasks, but their current status still gates reversals.
+			const parents = await taskDb.from('assistant_workflow_tasks').select('id,status')
+				.eq('assigned_to', user.id).eq('task_type', 'salary_vikin_adjustment_jv').in('id', dependencyIds);
+			if (parents.error) throw parents.error;
+			for (const parent of parents.data || []) dependencyStatus.set(String(parent.id), parent.status);
+		}
+		return json({ success: true, tasks: (data || []).map(task => isVikinReversal(task) ? {
+			...task,
+			depends_on_task_id: task.payload?.depends_on_task_id || null,
+			depends_on_status: dependencyStatus.get(String(task.payload?.depends_on_task_id || '')) || null
+		} : task) });
 	} catch (error: any) {
 		return json({ success: false, error: error.message || 'Desktop session required' }, { status: 401 });
 	}

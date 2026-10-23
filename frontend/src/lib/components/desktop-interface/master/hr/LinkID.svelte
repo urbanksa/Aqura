@@ -3,6 +3,7 @@
 	import { supabase } from '$lib/utils/supabase';
 	import { currentUser } from '$lib/utils/persistentAuth';
 	import { _ as t, currentLocale } from '$lib/i18n';
+	import VikinEmployeeLedgerLink from './VikinEmployeeLedgerLink.svelte';
 
 	$: isArabic = $currentLocale === 'ar';
 	$: displayName = (user) => isArabic ? (user.arabic_name || user.english_name || '') : (user.english_name || user.arabic_name || '');
@@ -40,7 +41,14 @@
 	let erpBranches = [];
 	let erpSelectedBranch = null;
 	let erpSearchQuery = '';
-	let erpSearchResults = [];
+	let erpEmployees = [];
+	let erpBranchFilter = '';
+	$: erpSearchResults = erpSelectedEmployee ? [] : erpEmployees.filter(emp => {
+		const query = erpSearchQuery.trim().toLowerCase();
+		return (!erpBranchFilter || String(emp.aquraBranchId) === erpBranchFilter)
+			&& (!query || [emp.EmployeeName, emp.EmployeeCode, emp.EmployeeID].some(value =>
+				String(value ?? '').toLowerCase().includes(query)));
+	});
 	let erpIsSearching = false;
 	let erpSearchError = '';
 	let erpSelectedEmployee = null; // { erpEmployeeId, name, code }
@@ -50,11 +58,36 @@
 	let erpSelectedUserId = null;
 	let erpBalance = null; // { netBalance, direction, totalDebit, totalCredit, ledgerName }
 	let erpIsLoadingBalance = false;
+	let erpBalanceRequestId = 0;
 	let erpSaveSuccess = '';
 	let erpSaveError = '';
 	let erpLinkedMap = {}; // user_id -> { branch_id -> erp_employee_id }
 	let erpLinkedBalances = {}; // `${userId}_${branchId}` -> balance object
 	let erpLinkedBalancesLoading = false;
+	let vikinLinkPanel;
+	let vikinLinkState = null;
+	$: selectedErpUser = users.find(user => user.id === erpSelectedUserId);
+	$: vikinLinkedContext = selectedErpUser?.is_vikin_sponsored && vikinLinkState?.employeeId === selectedErpUser.master_id
+		? vikinLinkState.context : null;
+	$: vikinLinkedLedger = vikinLinkedContext?.ledgers.find(ledger => ledger.id === vikinLinkedContext.link?.ledger_id);
+	$: vikinLinkedCompanyName = vikinLinkedContext ? (isArabic
+		? vikinLinkedContext.company.name_ar || vikinLinkedContext.company.name_en
+		: vikinLinkedContext.company.name_en || vikinLinkedContext.company.name_ar) : '';
+
+	function updateVikinLinkState(event) {
+		if (event.detail.employeeId === selectedErpUser?.master_id) vikinLinkState = event.detail;
+	}
+
+	function selectErpUser(user) {
+		if (erpSelectedUserId !== user.id) {
+			vikinLinkState = null;
+			clearErpSelection();
+			erpSearchQuery = '';
+			erpBranchFilter = '';
+		}
+		erpSelectedUserId = user.id;
+		loadLinkedBalances(user.id);
+	}
 
 	async function loadLinkedBalances(userId) {
 		const links = erpLinkedMap[userId];
@@ -93,44 +126,53 @@
 			.order('branch_id');
 		if (!error && data) {
 			erpBranches = data;
-			if (data.length > 0) erpSelectedBranch = data[0];
+			await loadErpEmployees();
 		}
 	}
 
-	async function searchErpEmployees() {
-		if (!erpSelectedBranch || erpSearchQuery.trim().length < 2) return;
+	async function loadErpEmployees() {
+		if (erpIsSearching) return;
 		erpIsSearching = true;
 		erpSearchError = '';
-		erpSearchResults = [];
-		try {
-			const resp = await fetch(`/api/erp-employee-balance?branchId=${erpSelectedBranch.branch_id}&query=${encodeURIComponent(erpSearchQuery.trim())}`);
+		const results = await Promise.allSettled(erpBranches.map(async branch => {
+			const resp = await fetch(`/api/erp-employee-balance?branchId=${branch.branch_id}`, { signal: AbortSignal.timeout(25000) });
 			const data = await resp.json();
-			if (data.success) {
-				erpSearchResults = data.employees;
-			} else {
-				erpSearchError = data.error || 'Search failed';
-			}
-		} catch (e) {
-			erpSearchError = 'Connection error';
-		} finally {
-			erpIsSearching = false;
-		}
+			if (!resp.ok || !data.success) throw new Error(branch.branch_name);
+			return (data.employees || []).map(emp => ({
+				...emp, aquraBranchId: branch.branch_id, branchName: branch.branch_name
+			}));
+		}));
+		erpEmployees = results.flatMap(result => result.status === 'fulfilled' ? result.value : []);
+		const failed = erpBranches.filter((_, index) => results[index].status === 'rejected');
+		if (failed.length) erpSearchError = `Could not load employees from: ${failed.map(branch => branch.branch_name).join(', ')}. Use Refresh to retry.`;
+		erpIsSearching = false;
+	}
+
+	function clearErpSelection() {
+		erpBalanceRequestId++;
+		erpIsLoadingBalance = false;
+		erpSelectedEmployee = null;
+		erpSelectedBranch = null;
+		erpBalance = null;
+		erpSaveSuccess = '';
+		erpSaveError = '';
 	}
 
 	function selectErpEmployee(emp) {
+		erpSelectedBranch = erpBranches.find(branch => branch.branch_id === emp.aquraBranchId);
 		erpSelectedEmployee = {
 			erpEmployeeId: parseInt(emp.EmployeeID),
 			name: emp.EmployeeName,
 			code: emp.EmployeeCode
 		};
-		erpSearchResults = [];
-		erpSearchQuery = `${emp.EmployeeCode} - ${emp.EmployeeName}`;
+		erpSearchQuery = emp.EmployeeName;
 		erpBalance = null;
 		if (erpSelectedUserId) loadErpBalance();
 	}
 
 	async function loadErpBalance() {
 		if (!erpSelectedEmployee || !erpSelectedBranch) return;
+		const requestId = ++erpBalanceRequestId;
 		erpIsLoadingBalance = true;
 		erpBalance = null;
 		try {
@@ -140,13 +182,13 @@
 				body: JSON.stringify({ branchId: erpSelectedBranch.branch_id, erpEmployeeId: erpSelectedEmployee.erpEmployeeId })
 			});
 			const data = await resp.json();
-			if (data.success && data.balance) {
+			if (requestId === erpBalanceRequestId && data.success && data.balance) {
 				erpBalance = data.balance;
 			}
 		} catch (e) {
 			console.error('Balance load error', e);
 		} finally {
-			erpIsLoadingBalance = false;
+			if (requestId === erpBalanceRequestId) erpIsLoadingBalance = false;
 		}
 	}
 
@@ -207,10 +249,9 @@
 	}
 
 	$: erpFilteredUsers = users.filter(u =>
-		u.status !== 'inactive' &&
 		(u.username.toLowerCase().includes(erpUserSearchQuery.toLowerCase()) ||
 		(u.master_id && u.master_id.toLowerCase().includes(erpUserSearchQuery.toLowerCase())))
-	).slice(0, 100);
+	).sort((a, b) => Number(a.status === 'inactive') - Number(b.status === 'inactive'));
 
 	async function loadUsers() {
 		isLoading = true;
@@ -263,7 +304,7 @@
 			// Fetch existing master records (CRITICAL: must load ALL to prevent duplicate EMP IDs)
 			const { data: masterData, error: masterError } = await supabase
 				.from('hr_employee_master')
-				.select('user_id, id, name_en, name_ar, employee_id_mapping, erp_employee_id_mapping, current_branch_id, current_position_id')
+				.select('user_id, id, name_en, name_ar, employee_id_mapping, erp_employee_id_mapping, current_branch_id, current_position_id, sponsor:company_master!hr_employee_master_sponsor_id_fkey(erp_provider)')
 				.limit(1000000);
 
 			if (masterError) {
@@ -292,6 +333,7 @@
 			usersData.forEach(user => {
 				// Load from master record if exists
 				const master = masterMap[user.id];
+				user.is_vikin_sponsored = master?.sponsor?.erp_provider === 'vikin';
 				if (master) {
 					user.master_id = master.id;
 					user.english_name = master.name_en;
@@ -531,7 +573,7 @@
 	);
 </script>
 
-<div class="container">
+<div class="container" class:vikin-layout={activeTab === 'erp' && selectedErpUser?.is_vikin_sponsored}>
 
 	<!-- Tab bar -->
 	<div class="tab-bar">
@@ -674,7 +716,7 @@
 	{#if activeTab === 'erp'}
 	<div class="erp-tab">
 
-		<div class="erp-columns">
+		<div class="erp-columns" class:has-vikin={selectedErpUser?.is_vikin_sponsored}>
 
 			<!-- LEFT: User selector -->
 			<div class="erp-panel">
@@ -690,10 +732,11 @@
 						<button
 							class="erp-user-item"
 							class:selected={erpSelectedUserId === user.id}
-							on:click={() => { erpSelectedUserId = user.id; erpSaveSuccess = ''; erpSaveError = ''; erpBalance = null; if (erpSelectedEmployee) loadErpBalance(); loadLinkedBalances(user.id); }}
+							class:erp-user-inactive={user.status === 'inactive'}
+							on:click={() => selectErpUser(user)}
 						>
-							<span class="erp-user-emp">{user.master_id || '—'}</span>
-							<span class="erp-user-name">{user.username}</span>
+							<span class="erp-user-emp" class:vikin-sponsored={user.is_vikin_sponsored} title={user.is_vikin_sponsored ? (isArabic ? 'الكفيل يستخدم نظام فيكن' : 'Sponsor uses Vikin') : undefined}>{user.master_id || '—'}</span>
+							<span class="erp-user-name">{user.username}{#if user.status === 'inactive'} <span class="text-[10px]">({$t('common.inactive')})</span>{/if}</span>
 							{#if erpLinkedMap[user.id] && Object.keys(erpLinkedMap[user.id]).length > 0}
 								<span class="erp-linked-badge">🔗 {Object.keys(erpLinkedMap[user.id]).length}</span>
 							{/if}
@@ -713,9 +756,10 @@
 				<div class="erp-branch-row">
 					<!-- svelte-ignore a11y-label-has-associated-control -->
 					<label>Branch:</label>
-					<select class="erp-branch-select" bind:value={erpSelectedBranch}>
+					<select class="erp-branch-select" bind:value={erpBranchFilter} on:change={() => { clearErpSelection(); erpSearchQuery = ''; }}>
+						<option value="">All branches</option>
 						{#each erpBranches as b (b.branch_id)}
-							<option value={b}>{b.branch_name}</option>
+							<option value={String(b.branch_id)}>{b.branch_name}</option>
 						{/each}
 					</select>
 				</div>
@@ -727,10 +771,10 @@
 						class="search-input"
 						placeholder="Search ERP employee by name, code or ID..."
 						bind:value={erpSearchQuery}
-						on:keydown={(e) => e.key === 'Enter' && searchErpEmployees()}
+						on:input={clearErpSelection}
 					/>
-					<button class="erp-search-btn" on:click={searchErpEmployees} disabled={erpIsSearching}>
-						{erpIsSearching ? '⏳' : '🔍'}
+					<button class="erp-search-btn" on:click={loadErpEmployees} disabled={erpIsSearching} title="Refresh ERP employees" aria-label="Refresh ERP employees">
+						{erpIsSearching ? '⏳' : '↻'}
 					</button>
 				</div>
 
@@ -738,14 +782,21 @@
 					<div class="erp-error">{erpSearchError}</div>
 				{/if}
 
+				{#if erpIsSearching}
+					<div class="erp-empty">Loading employees from all connected branches...</div>
+				{:else if !erpSelectedEmployee && erpSearchResults.length === 0 && !erpSearchError}
+					<div class="erp-empty">No matching ERP employees.</div>
+				{/if}
+
 				<!-- Search results dropdown -->
 				{#if erpSearchResults.length > 0}
 					<div class="erp-results">
-						{#each erpSearchResults as emp (emp.EmployeeID)}
+						{#each erpSearchResults as emp (`${emp.aquraBranchId}:${emp.EmployeeID}`)}
 							<button class="erp-result-item" on:click={() => selectErpEmployee(emp)}>
 								<span class="erp-result-id">#{emp.EmployeeID}</span>
 								<span class="erp-result-code">{emp.EmployeeCode}</span>
 								<span class="erp-result-name">{emp.EmployeeName}</span>
+								<span>{emp.branchName}</span>
 							</button>
 						{/each}
 					</div>
@@ -754,6 +805,10 @@
 				<!-- Selected ERP employee -->
 				{#if erpSelectedEmployee}
 					<div class="erp-selected-emp">
+						<div class="erp-selected-row">
+							<span class="erp-label">Branch:</span>
+							<span class="erp-value">{erpSelectedBranch?.branch_name}</span>
+						</div>
 						<div class="erp-selected-row">
 							<span class="erp-label">ERP ID:</span>
 							<span class="erp-value">{erpSelectedEmployee.erpEmployeeId}</span>
@@ -806,6 +861,13 @@
 					<div class="erp-error">{erpSaveError}</div>
 				{/if}
 			</div>
+			{#if selectedErpUser?.is_vikin_sponsored}
+				<div class="erp-panel vikin-panel">
+					{#key erpSelectedUserId}
+						<VikinEmployeeLedgerLink employeeId={selectedErpUser.master_id} bind:this={vikinLinkPanel} on:statechange={updateVikinLinkState} />
+					{/key}
+				</div>
+			{/if}
 		</div>
 
 		<!-- Linked ERP IDs table for selected user -->
@@ -814,12 +876,12 @@
 			{#if selectedUser}
 			<div class="erp-links-section">
 				<h3 class="erp-panel-title">🔗 ERP Links for: {selectedUser.username} ({selectedUser.master_id || '—'})</h3>
-				{#if Object.keys(erpLinkedMap[erpSelectedUserId] || {}).length === 0}
+				{#if Object.keys(erpLinkedMap[erpSelectedUserId] || {}).length === 0 && !vikinLinkedLedger}
 					<div class="erp-empty">No ERP links yet for this user.</div>
 				{:else}
 					<table class="erp-links-table">
 						<thead>
-							<tr><th>Branch</th><th>ERP Employee ID</th><th>Ledger Code</th><th>Ledger Name</th><th>Debit</th><th>Credit</th><th>Balance</th><th>Action</th></tr>
+							<tr><th>{isArabic ? 'الفرع / الشركة' : 'Branch / Company'}</th><th>ERP Employee ID</th><th>Ledger Code</th><th>Ledger Name</th><th>Debit</th><th>Credit</th><th>Balance</th><th>Action</th></tr>
 						</thead>
 						<tbody>
 							{#each Object.entries(erpLinkedMap[erpSelectedUserId] || {}) as [branchId, empId]}
@@ -840,6 +902,18 @@
 									</td>
 								</tr>
 							{/each}
+							{#if vikinLinkedLedger}
+								<tr class="vikin-linked-row">
+									<td>{vikinLinkedCompanyName} <span class="vikin-badge">Vikin</span></td>
+									<td>—</td>
+									<td>{vikinLinkedLedger.ledger_code}</td>
+									<td>{vikinLinkedLedger.ledger_name}<small class="vikin-ledger-group">{vikinLinkedLedger.account_group_name}</small></td>
+									<td class="num-cell">—</td>
+									<td class="num-cell">—</td>
+									<td class="balance-cell">—</td>
+									<td><button class="erp-remove-btn" on:click={() => vikinLinkPanel?.removeLink()} disabled={vikinLinkState?.busy}>{isArabic ? 'إزالة الربط' : 'Remove Link'}</button></td>
+								</tr>
+							{/if}
 						</tbody>
 					</table>
 				{/if}
@@ -961,6 +1035,7 @@
 		font-family: inherit;
 		overflow: hidden;
 	}
+	.container.vikin-layout { max-width: none; }
 
 	/* ---- Tab bar ---- */
 	.tab-bar {
@@ -1005,7 +1080,10 @@
 		gap: 10px;
 		overflow: hidden;
 	}
+	.erp-columns.has-vikin { grid-template-columns: minmax(180px, .65fr) minmax(260px, 1fr) minmax(300px, 1fr); }
+	.vikin-panel { border-color: #bfdbfe; }
 	.erp-panel {
+		min-height: 0;
 		background: #fff;
 		border: 1px solid #e2e8f0;
 		border-radius: 10px;
@@ -1048,7 +1126,10 @@
 	}
 	.erp-user-item:hover { background: #ede9fe; border-color: #c4b5fd; box-shadow: 0 2px 6px rgba(124,58,237,0.12); }
 	.erp-user-item.selected { background: linear-gradient(135deg, #7c3aed, #6d28d9); color: #fff; border-color: #7c3aed; box-shadow: 0 2px 8px rgba(124,58,237,0.3); }
+	.erp-user-item.erp-user-inactive:not(.selected) { background: #fff1f2; color: #9f1239; border-color: #fecdd3; }
 	.erp-user-emp { font-weight: 700; min-width: 48px; font-size: 10px; opacity: 0.8; flex-shrink: 0; }
+	.erp-user-emp.vikin-sponsored { color: #2563eb; opacity: 1; }
+	.erp-user-item.selected .erp-user-emp.vikin-sponsored { color: #bfdbfe; }
 	.erp-user-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 	.erp-linked-badge { background: #22c55e; color: #fff; border-radius: 999px; padding: 1px 5px; font-size: 10px; font-weight: 700; flex-shrink: 0; }
 
@@ -1076,10 +1157,10 @@
 	.erp-results {
 		border: 1px solid #e2e8f0;
 		border-radius: 7px;
-		max-height: 130px;
+		flex: 1;
+		min-height: 0;
 		overflow-y: auto;
 		background: #fff;
-		flex-shrink: 0;
 	}
 	.erp-result-item {
 		display: flex;
@@ -1163,6 +1244,10 @@
 	.erp-links-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 	.erp-links-table th { background: #f8fafc; padding: 6px 10px; text-align: left; font-weight: 600; color: #475569; border-bottom: 1px solid #e2e8f0; }
 	.erp-links-table td { padding: 6px 10px; border-bottom: 1px solid #f1f5f9; }
+	.vikin-linked-row { background: #eff6ff; }
+	.vikin-badge { display: inline-block; margin-inline-start: 6px; padding: 2px 6px; border-radius: 4px; background: #dbeafe; color: #1d4ed8; font-size: 10px; font-weight: 700; }
+	.vikin-ledger-group { display: block; margin-top: 2px; color: #64748b; }
+	.erp-remove-btn:disabled { opacity: .5; cursor: default; }
 	.num-cell { text-align: right; color: #475569; font-variant-numeric: tabular-nums; }
 	.balance-cell { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
 	.bal-dr { color: #c2410c; }

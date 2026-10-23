@@ -592,7 +592,7 @@
 		FinanceDashboard: ["APPROVAL_CENTER","LC_PLANNER","ERP_LEDGERS"],
 		FinanceManage: ["CATEGORY_MANAGER","PURCHASE_VOUCHER_MANAGER","MANAGE_RECONCILIATIONS","ASSET_MANAGER","LEASE_AND_RENT"],
 		FinanceOperations: ["MANUAL_SCHEDULING","DAY_BUDGET_PLANNER","BANK_PAYMENT_PLANNER","STATEMENTS_MANAGER","MONTHLY_MANAGER","EXPENSE_MANAGER","PAID_MANAGER","DENOMINATION","PETTY_CASH","CHANGE_REQUESTS"],
-		FinanceReports: ["EXPENSE_TRACKER","SALES_REPORT","SALES_ANALYSIS","MONTHLY_BREAKDOWN","OVERDUES_REPORT","VENDOR_PAYMENTS","POS_REPORT"],
+		FinanceReports: ["EXPENSE_TRACKER","SALES_REPORT","SALES_ANALYSIS","MONTHLY_BREAKDOWN","OVERDUES_REPORT","VENDOR_PAYMENTS","POS_REPORT","SALARY_STATEMENT"],
 		HRDashboard: ["SECURITY_CODE","FINGERPRINT_DASHBOARD","QUICK_DASHBOARD"],
 		HRManage: ["EMPLOYEE_MASTER","LINK_ID","HR_SERVICES","SALARY_STATEMENT"],
 		HROperations: ["EMPLOYEE_FILES","PROCESS_FINGERPRINT","SALARY_AND_WAGE","SHIFTS","SHIFT_AND_DAY_OFF","DISCIPLINE","INCIDENT_MANAGER","REPORT_INCIDENT","DAILY_CHECKLIST_MANAGER","BREAK_REGISTER"],
@@ -1219,18 +1219,19 @@
 		showHRSubmenu = false;
 	}
 
-	function openSalaryStatement() {
+	function openSalaryStatement(savedStatementsOnly = false) {
 		collapseAllMenus();
 		const windowId = generateWindowId('salary-statement');
 		const instanceNumber = Math.floor(Math.random() * 1000) + 1;
 
 		openWindow({
 			id: windowId,
-			title: `📄 ${t('nav.salaryStatement')} #${instanceNumber}`,
+			title: `📄 ${t(savedStatementsOnly ? 'reports.savedSalaryStatements' : 'nav.salaryStatement')} #${instanceNumber}`,
 			component: PrepareSalaryStatementWindow,
 			componentName: "PrepareSalaryStatementWindow",
 			props: {
-				windowId: windowId
+				windowId: windowId,
+				savedStatementsOnly
 			},
 			icon: '📄',
 			size: { width: 900, height: 600 },
@@ -5747,6 +5748,14 @@ function openApprovalCenter() {
 			<!-- Reports Subsection Items -->
 			{#if showFinanceReportsSubmenu}
 				<div class="submenu-subitem-container">
+					{#if isButtonAllowed('SALARY_STATEMENT')}
+						<div class="submenu-item-container">
+							<button class="submenu-item" on:click={() => openSalaryStatement(true)}>
+								<span class="menu-icon">📄</span>
+								<span class="menu-text">{t('reports.savedSalaryStatements')}</span>
+							</button>
+						</div>
+					{/if}
 					{#if isButtonAllowed('EXPENSE_TRACKER')}
 						<div class="submenu-item-container">
 							<button class="submenu-item" on:click={openExpenseTracker}>
@@ -5934,7 +5943,7 @@ function openApprovalCenter() {
 					{/if}
 					{#if isButtonAllowed('SALARY_STATEMENT')}
 						<div class="submenu-item-container">
-							<button class="submenu-item" on:click={openSalaryStatement}>
+							<button class="submenu-item" on:click={() => openSalaryStatement()}>
 								<span class="menu-icon">📄</span>
 								<span class="menu-text">{t('nav.salaryStatement')}</span>
 							</button>

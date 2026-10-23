@@ -9,6 +9,12 @@
 	import EmployeeAnalysisWindow from './EmployeeAnalysisWindow.svelte';
 	import EmployeeSalaryNotesPopup from './EmployeeSalaryNotesPopup.svelte';
 	import SalaryAndWage from './SalaryAndWage.svelte';
+	import SalaryStatementAccounts from '../finance/SalaryStatementAccounts.svelte';
+	import SalaryStatementEntryPreview from '../finance/SalaryStatementEntryPreview.svelte';
+	import SalaryStatementCategoryEntries from '../finance/SalaryStatementCategoryEntries.svelte';
+	import { SALARY_ENTRY_CATEGORIES, type SalaryEntryCategory } from '$lib/utils/salaryCategoryEntries';
+	import { applySavedSalaryEmployeeNames, type SavedSalaryEmployeeContext } from '$lib/utils/savedSalaryEmployeeContext';
+	import { canSaveSalaryEntries, salaryEntrySavePayload, type SalaryEntryResult, type SavedSalaryEntryBundle } from '$lib/utils/salaryEntryWorkflow';
 	import { buildSalaryAttendance, SALARY_ATTENDANCE_POLICY_VERSION } from '$lib/utils/salaryAttendancePolicy';
 	import {
 		SALARY_STATEMENT_CALCULATION_VERSION,
@@ -19,6 +25,113 @@
 	} from '$lib/utils/salaryStatementCalculation';
 
 	export let windowId: string;
+	export let savedStatementsOnly = false;
+	let showSavedStatementsList = savedStatementsOnly;
+	let savedStatementDataInitialized = false;
+	let financeSponsors: Record<string, { id: number | null; nameEn: string; nameAr: string }> = {};
+	let financeEmployeeContexts: Record<string, SavedSalaryEmployeeContext> = {};
+
+	function financeSponsorName(employeeId: string, language: string): string {
+		const sponsor = financeSponsors[employeeId];
+		if (!sponsor) return '—';
+		if (sponsor.id === null) return $t('reports.salaryNoSponsorship');
+		return (language === 'ar' ? sponsor.nameAr || sponsor.nameEn : sponsor.nameEn || sponsor.nameAr) || '—';
+	}
+
+	async function loadFinanceSponsors(statementId: string) {
+		financeSponsors = {};
+		financeEmployeeContexts = {};
+		const { data, error } = await supabase.rpc('get_saved_salary_employee_context', { p_statement_id: statementId });
+		if (error) throw error;
+		const employees: SavedSalaryEmployeeContext[] = data || [];
+		financeEmployeeContexts = Object.fromEntries(employees.map(employee => [String(employee.id), employee]));
+		analysisData = applySavedSalaryEmployeeNames(analysisData, employees);
+		financeSponsors = Object.fromEntries(employees.map(employee => {
+			return [String(employee.id), {
+				id: employee.sponsor_id == null ? null : Number(employee.sponsor_id),
+				nameEn: employee.sponsor_name_en || '', nameAr: employee.sponsor_name_ar || ''
+			}];
+		}));
+	}
+	let financeTab: 'statement' | 'accounts' | SalaryEntryCategory = 'statement';
+	let entriesGenerationRequested = false;
+	let entriesGenerating = false;
+	let entriesReady = false;
+	let entriesGenerationId = 0;
+	let generatedEntryData: SalaryEntryResult | null = null;
+	let savedEntryBundle: SavedSalaryEntryBundle | null = null;
+	let savingEntries = false;
+	let entriesWorkflowError = '';
+	$: entriesSavedLocked = !!savedEntryBundle && savedEntryBundle.vikin_entries_saved === true;
+	async function saveAllEntries() {
+		if (!currentSavedStatementId || savingEntries || !canSaveSalaryEntries(generatedEntryData, savedEntryBundle)) return;
+		const statementId = currentSavedStatementId;
+		savingEntries = true; entriesWorkflowError = '';
+		try {
+			const response = await supabase.rpc('save_salary_entries', { p_statement_id: statementId, p_vouchers: salaryEntrySavePayload(generatedEntryData!, savedEntryBundle) });
+			if (response.error) throw response.error;
+			if (currentSavedStatementId === statementId) { savedEntryBundle = response.data; entriesReady = true; entriesGenerationRequested = true; }
+		} catch(e) { entriesWorkflowError = (e as { message?: string }).message || $t('reports.salaryEntryLoadError'); }
+		finally { savingEntries = false; }
+	}
+	async function refreshSavedEntryStatus() {
+		if (!currentSavedStatementId) return;
+		const statementId = currentSavedStatementId;
+		const response = await supabase.rpc('get_saved_salary_entries', { p_statement_id: statementId });
+		if (currentSavedStatementId !== statementId) return;
+		if (response.error) entriesWorkflowError = response.error.message;
+		else savedEntryBundle = response.data;
+	}
+	function invalidateGeneratedEntries() {
+		if (savedEntryBundle?.vikin_entries_saved === true) return;
+		entriesGenerationRequested = false;
+		entriesGenerating = false;
+		entriesReady = false;
+		entriesGenerationId++;
+		generatedEntryData = null;
+	}
+	function generateAllEntries() {
+		if (entriesGenerating || savedEntryBundle?.vikin_entries_saved === true || savingEntries) return;
+		entriesGenerationId++;
+		entriesReady = false;
+		entriesGenerating = true;
+		entriesGenerationRequested = true;
+		financeTab = savedEntryBundle ? 'adjustmentsVikin' : 'booking';
+	}
+	function entryGenerationCompleted(success: boolean, result?: SalaryEntryResult) {
+		entriesGenerating = false;
+		entriesReady = success;
+		generatedEntryData = result || null;
+	}
+	function openFinanceAccounts() {
+		invalidateGeneratedEntries();
+		financeTab = 'accounts';
+	}
+	const financeCategoryColors: Record<SalaryEntryCategory, { active: string; idle: string }> = {
+		booking: { active: 'bg-blue-600 border-blue-600 text-white shadow-sm', idle: 'bg-blue-50 border-blue-200 text-blue-800 hover:bg-blue-100' },
+		adjustments: { active: 'bg-amber-600 border-amber-600 text-white shadow-sm', idle: 'bg-amber-50 border-amber-200 text-amber-900 hover:bg-amber-100' },
+		adjustmentsVikin: { active: 'bg-purple-600 border-purple-600 text-white shadow-sm', idle: 'bg-purple-50 border-purple-200 text-purple-900 hover:bg-purple-100' },
+		bankPolosys: { active: 'bg-teal-700 border-teal-700 text-white shadow-sm', idle: 'bg-teal-50 border-teal-200 text-teal-900 hover:bg-teal-100' },
+		bankVikin: { active: 'bg-violet-600 border-violet-600 text-white shadow-sm', idle: 'bg-violet-50 border-violet-200 text-violet-900 hover:bg-violet-100' },
+		cash: { active: 'bg-emerald-700 border-emerald-700 text-white shadow-sm', idle: 'bg-emerald-50 border-emerald-200 text-emerald-900 hover:bg-emerald-100' }
+	};
+	function isIncludedInSalaryStatement(row: { employeeId: string }) {
+		return String(row.employeeId) !== 'EMP51';
+	}
+	function financeCategoryRows() {
+		return analysisData.filter(isIncludedInSalaryStatement).map(row => {
+			const salary = computeRowSalary(row);
+			return { employeeId: String(row.employeeId), employeeName: employeeDisplayName(row, $locale), branchId: Number(row.currentBranchId),
+				grossEarnings: salary.gross, netSalary: salary.netSalary, netBank: salary.netBank, netCash: salary.netCash, deductions: salary.deductions };
+		});
+	}
+	let expandedSalaryEntries = new Set<string>();
+	function toggleSalaryEntry(employeeId: string) {
+		const next = new Set(expandedSalaryEntries);
+		if (next.has(employeeId)) next.delete(employeeId);
+		else next.add(employeeId);
+		expandedSalaryEntries = next;
+	}
 
 	// ============================================================
 	// SALARY STATEMENT LOGS
@@ -574,17 +687,23 @@
 		recordLog({ action_type: LOG.EMP_EDIT_APPLY, action_description: `Applied salary edits for employee ${empEditRow.employeeName || id}`, employee_id: id, employee_name: empEditRow.employeeName, related_ui: 'EmpEditModal', before_value: beforeSnap, after_value: afterSnap });
 	}
 
+	function employeeDisplayName(row: any, language: string): string {
+		return (language === 'ar' ? row.employeeNameAr : row.employeeNameEn)
+			|| row.employeeName || row.employeeNameEn || row.employeeNameAr || String(row.employeeId);
+	}
+
 	// Reactive filtering and sorting for the view
 	$: filteredAnalysisData = analysisData
 		.filter(row => {
 			const matchesSearch = !searchQuery || 
 				String(row.employeeId).toLowerCase().includes(searchQuery.toLowerCase()) || 
-				row.employeeName.toLowerCase().includes(searchQuery.toLowerCase()) ||
+				[row.employeeName, row.employeeNameEn, row.employeeNameAr].some(name =>
+					(name || '').toLowerCase().includes(searchQuery.toLowerCase())) ||
 				(row.idNumber && String(row.idNumber).toLowerCase().includes(searchQuery.toLowerCase()));
 			
 			const matchesBranch = !selectedBranch || String(row.currentBranchId) === String(selectedBranch);
 			
-			const isNotExcluded = row.employeeId !== 'EMP51';
+			const isNotExcluded = isIncludedInSalaryStatement(row);
 			
 			return matchesSearch && matchesBranch && isNotExcluded;
 		})
@@ -684,7 +803,11 @@
 		const grossCash = (totalAllowances - foodDed - bank) * scale;
 		const nonFood = totalDeductions - foodDed;
 		const fromBank = Math.min(nonFood, grossBank);
-		return { gross, totalDeductions, netSalary, netBank: Math.max(0, grossBank - fromBank), netCash: Math.max(0, grossCash - (nonFood - fromBank)) };
+		return { gross, totalDeductions, netSalary, netBank: Math.max(0, grossBank - fromBank), netCash: Math.max(0, grossCash - (nonFood - fromBank)),
+            deductions: { gosi: gosiDeductions[row.employeeId] || 0, late, underWorked: under, incomplete, unapprovedLeave: unapproved,
+                penalties: (autoFineDeductions[row.employeeId] || 0) + (empEditOverrides[row.employeeId]?.penalties || 0),
+                other: empEditOverrides[row.employeeId]?.otherDeductions || 0, food: foodDed }
+        };
 	}
 
 	// Compute every monetary output through one calculation path.
@@ -840,7 +963,7 @@
 	let saveError = '';
 	let saveNotice = '';
 	let loadList: any[] = [];
-	let loadListLoading = false;
+	let loadListLoading = savedStatementsOnly;
 
 // ====================================================================
 // MUDAD EXPORTER
@@ -1514,7 +1637,8 @@ function buildMudadRowMap(): Map<string, { otherAllowances: number; leaveOfAbsen
 	 * added or corrected in their employee record afterward (very common — Iqama/national ID
 	 * numbers often get entered later), the frozen value goes stale and the Mudad export's
 	 * Legal-Id matching silently fails for that employee even though the live employee record
-	 * is correct. Re-pull the current Legal Id for every employee in the loaded statement.
+	 * is correct. Re-pull the current Legal Id and both display names by employee ID,
+	 * including for older snapshots that only stored a name in one language.
 	 */
 	async function refreshLegalIdsFromDatabase() {
 		try {
@@ -1522,14 +1646,19 @@ function buildMudadRowMap(): Map<string, { otherAllowances: number; leaveOfAbsen
 			if (!ids.length) return;
 			const { data: empData, error } = await supabase
 				.from('hr_employee_master_with_status')
-				.select('id, id_number')
+				.select('id, id_number, name_en, name_ar')
 				.in('id', ids);
 			if (error) throw error;
 			if (empData) {
-				const idMap = new Map(empData.map((e: any) => [String(e.id), e.id_number ?? null]));
+				const idMap = new Map(empData.map(e => [String(e.id), e]));
 				analysisData = analysisData.map(row => {
 					const fresh = idMap.get(String(row.employeeId));
-					return fresh !== undefined ? { ...row, idNumber: fresh } : row;
+					return fresh ? {
+						...row,
+						idNumber: fresh.id_number ?? null,
+						employeeNameEn: fresh.name_en || row.employeeNameEn,
+						employeeNameAr: fresh.name_ar || row.employeeNameAr,
+					} : row;
 				});
 			}
 		} catch (e) {
@@ -1577,7 +1706,8 @@ function buildMudadRowMap(): Map<string, { otherAllowances: number; leaveOfAbsen
 	}
 
 	async function openLoadModal() {
-		showLoadModal = true;
+		if (savedStatementsOnly) showSavedStatementsList = true;
+		else showLoadModal = true;
 		loadListLoading = true;
 		loadList = [];
 		saveError = '';
@@ -1599,6 +1729,10 @@ function buildMudadRowMap(): Map<string, { otherAllowances: number; leaveOfAbsen
 		loadingStatementId = id;
 		saveError = '';
 		try {
+			if (savedStatementsOnly && !savedStatementDataInitialized) {
+				await loadInitialData();
+				savedStatementDataInitialized = true;
+			}
 			const { data, error } = await supabase.rpc('get_salary_statement_by_id', { p_id: id });
 			if (error) throw error;
 			if (!data?.success) throw new Error(data?.error || 'Load failed');
@@ -1607,6 +1741,7 @@ function buildMudadRowMap(): Map<string, { otherAllowances: number; leaveOfAbsen
 			restoreStatementSnapshot(item.data_json);
 			await refreshGosiPercentagesFromDatabase();
 			await refreshLegalIdsFromDatabase();
+			if (savedStatementsOnly) await loadFinanceSponsors(item.id);
 			currentSavedStatementId = item.id;
 			saveStatementName = item.statement_name;
 			isLoadedFromSaved = true;
@@ -1614,6 +1749,14 @@ function buildMudadRowMap(): Map<string, { otherAllowances: number; leaveOfAbsen
 			// Let reactive recalculations settle before taking the baseline
 			setTimeout(() => { captureRowBaseline(); }, 60);
 			showLoadModal = false;
+			showSavedStatementsList = false;
+			financeTab = 'statement';
+			savedEntryBundle = null;
+			invalidateGeneratedEntries();
+			entriesWorkflowError = '';
+			if (savedStatementsOnly) await refreshSavedEntryStatus();
+			if (savedEntryBundle) { entriesReady = true; entriesGenerationRequested = true; }
+			expandedSalaryEntries = new Set();
 			saveNotice = $t('hr.salaryStatement.loadedNamed').replace('{name}', item.statement_name);
 			recordLog({ action_type: LOG.LOAD_SELECT, action_description: `Loaded salary statement: ${item.statement_name}`, statement_id: item.id, statement_name: item.statement_name, related_ui: 'LoadModal', metadata: { savedAt: item.created_at } });
 			setTimeout(() => { saveNotice = ''; }, 3000);
@@ -2292,6 +2435,10 @@ function buildMudadRowMap(): Map<string, { otherAllowances: number; leaveOfAbsen
 
 	onMount(async () => {
 		await loadEditLogPermissions();
+		if (savedStatementsOnly) {
+			await openLoadModal();
+			return;
+		}
 		await loadInitialData();
 		// Realtime subscriptions disabled - causes too many reloads
 		// await setupRealtimeSubscriptions();
@@ -2551,6 +2698,8 @@ function buildMudadRowMap(): Map<string, { otherAllowances: number; leaveOfAbsen
 			results.push({
 				employeeId: emp.id,
 				employeeName: $locale === 'ar' ? emp.name_ar || emp.name_en : emp.name_en,
+				employeeNameEn: emp.name_en,
+				employeeNameAr: emp.name_ar,
 				currentBranchId: emp.current_branch_id,
 				nationality: emp.nationality_name_en,
 				employmentStatus: emp.employment_status,
@@ -3303,6 +3452,8 @@ function buildMudadRowMap(): Map<string, { otherAllowances: number; leaveOfAbsen
 		return {
 			employeeId: emp.id,
 			employeeName: $locale === 'ar' ? emp.name_ar || emp.name_en : emp.name_en,
+			employeeNameEn: emp.name_en,
+			employeeNameAr: emp.name_ar,
 			currentBranchId: emp.current_branch_id,
 			nationality: emp.nationality_name_en,
 			employmentStatus: emp.employment_status,
@@ -3420,7 +3571,42 @@ return n;
 	}
 </script>
 
+{#if !savedStatementsOnly || !showSavedStatementsList}
 <div class="analyze-all-window flex flex-col h-full bg-slate-50">
+	{#if savedStatementsOnly}
+		<div class="p-6 bg-white border-b border-slate-200 space-y-4" dir={$locale === 'ar' ? 'rtl' : 'ltr'}>
+			<button type="button" on:click={openLoadModal} class="px-4 py-2 bg-blue-600 text-white font-bold rounded-lg hover:bg-blue-700">
+				{$t('reports.savedSalaryStatements')}
+			</button>
+			<div class="flex flex-wrap items-center gap-4">
+			<nav class="flex flex-wrap gap-2" aria-label={$t('reports.savedSalaryStatements')}>
+				<button type="button" aria-pressed={financeTab === 'statement'} on:click={() => financeTab = 'statement'} class="px-4 py-2 rounded-lg text-sm font-bold transition-colors {financeTab === 'statement' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}">
+					{$t('reports.viewSalaryStatement')}
+				</button>
+				<button type="button" aria-pressed={financeTab === 'accounts'} on:click={openFinanceAccounts} class="px-4 py-2 rounded-lg text-sm font-bold transition-colors {financeTab === 'accounts' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}">
+					{$t('reports.manageSalaryAccounts')}
+				</button>
+			</nav>
+			<nav class="flex flex-wrap items-center gap-2 px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl shadow-sm" aria-label={$t('reports.salaryEntryCategories')}>
+				<span class="px-2 text-sm font-bold text-slate-700">{$t('reports.salaryEntriesGroup')}</span>
+				<button type="button" on:click={generateAllEntries} disabled={entriesGenerating || entriesSavedLocked || savingEntries} class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-900 text-white text-sm font-bold disabled:opacity-50 disabled:cursor-not-allowed">
+					{entriesGenerating ? $t('reports.salaryGeneratingAllEntries') : savedEntryBundle && !entriesSavedLocked ? $t('reports.salaryGenerateVikinEntries') : $t('reports.salaryGenerateAllEntries')}
+				</button>
+				{#if entriesReady || savedEntryBundle}
+					<button type="button" on:click={saveAllEntries} disabled={savingEntries || !canSaveSalaryEntries(generatedEntryData, savedEntryBundle)} class="px-4 py-2 rounded-lg bg-emerald-700 text-white text-sm font-bold disabled:opacity-40">{savingEntries ? $t('common.loading') : entriesSavedLocked ? $t('reports.salaryEntriesSavedLocked') : savedEntryBundle ? $t('reports.salarySaveVikinEntries') : $t('reports.salarySaveAllEntries')}</button>
+				{/if}
+				{#if savedEntryBundle}<button type="button" on:click={refreshSavedEntryStatus} class="px-3 py-2 rounded-lg bg-white border text-sm">{$t('reports.salaryRefreshTaskStatus')}</button>{/if}
+				{#each SALARY_ENTRY_CATEGORIES as category}
+					<button type="button" disabled={!entriesReady} aria-pressed={financeTab === category} on:click={() => financeTab = category} class="px-4 py-2 border rounded-lg text-sm font-bold transition-colors disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 {financeTab === category ? financeCategoryColors[category].active : financeCategoryColors[category].idle}">
+						{$t(`reports.salaryCategory_${category}`)}
+					</button>
+				{/each}
+			</nav>
+			</div>
+			{#if entriesWorkflowError}<p role="alert" class="text-sm text-red-700">{entriesWorkflowError}</p>{/if}
+		</div>
+	{/if}
+	{#if !savedStatementsOnly || financeTab === 'statement'}
 	<!-- Header / Controls -->
 	<div class="p-6 bg-white border-b border-slate-200 shadow-sm space-y-4">
 		<div class="flex flex-wrap gap-4 items-end">
@@ -3477,6 +3663,7 @@ return n;
 				</button>
 			{/if}
 
+			{#if !savedStatementsOnly}
 			<button
 				on:click={handleExportExcel}
 				disabled={loading || analysisData.length === 0}
@@ -3598,6 +3785,7 @@ title="Export salary data to Mudad Excel template"
 					Logs
 				</button>
 			{/if}
+			{/if}
 		</div>
 	</div>
 
@@ -3614,6 +3802,10 @@ title="Export salary data to Mudad Excel template"
 							</th>
 							<th class="px-4 py-4 font-bold text-slate-700 border-b border-r w-[100px] sticky top-0 z-50 bg-slate-50 {$locale === 'ar' ? 'right-[40px]' : 'left-[40px]'}">{$t('hr.employeeId')}</th>
 							<th class="px-4 py-4 font-bold text-slate-700 border-b border-r w-[200px] sticky top-0 z-50 bg-slate-50 {$locale === 'ar' ? 'right-[140px]' : 'left-[140px]'}">{$t('hr.fullName')}</th>
+                            {#if savedStatementsOnly}
+                                <th class="sticky top-0 z-30 px-4 py-4 border-b border-r bg-slate-50 w-[120px]"><span class="sr-only">{$t('reports.salaryShowEntry')}</span></th>
+                                <th class="sticky top-0 z-30 px-4 py-4 border-b border-r bg-slate-50 text-slate-700 text-start w-[200px]">{$t('reports.salarySponsor')}</th>
+                            {/if}
 							<th class="sticky top-0 z-30 px-4 py-4 font-bold text-slate-700 border-b border-r bg-slate-50 text-center w-[130px] whitespace-nowrap {colVis.idNumber ? '' : 'hidden'}">{$t('hr.salaryStatement.idNumber')}</th>
 							<th class="sticky top-0 z-30 px-4 py-4 font-bold text-green-700 border-b border-r bg-green-50 text-center w-[160px] whitespace-nowrap {colVis.whatsappNumber ? '' : 'hidden'}">{$t('hr.salaryStatement.whatsappNumber')}</th>
 							<th class="sticky top-0 z-30 px-4 py-4 font-bold text-cyan-700 border-b border-r bg-cyan-50 text-center w-[180px] whitespace-nowrap {colVis.branch ? '' : 'hidden'}">{$t('hr.salaryStatement.branch')}</th>
@@ -3666,6 +3858,7 @@ title="Export salary data to Mudad Excel template"
 							<tr class="transition-colors group {row.employmentStatus === 'Remote Job' ? 'bg-orange-50 even:bg-orange-100' : 'even:bg-slate-100'}">
 								<td class="px-2 py-3 border-r sticky z-20 group-hover:bg-emerald-100 flex flex-col justify-center items-center gap-0.5 {$locale === 'ar' ? 'right-0' : 'left-0'} {row.employmentStatus === 'Remote Job' ? (rowIdx % 2 === 1 ? 'bg-orange-100' : 'bg-orange-50') : (rowIdx % 2 === 1 ? 'bg-slate-100' : 'bg-white')}">
 									<span class="text-xs font-semibold text-slate-600">{rowIdx + 1}</span>
+									{#if !savedStatementsOnly}
 									{#if row.employmentStatus === 'Job (With Finger)'}
 										<button 
 											class="p-1 hover:bg-slate-200 rounded-full transition-colors text-blue-600"
@@ -3720,6 +3913,7 @@ title="Export salary data to Mudad Excel template"
 											{/if}
 										</button>
 									{/if}
+									{/if}
 								</td>
 								<!-- Notes button alongside employee ID -->
 								<td class="px-4 py-3 font-mono font-medium text-slate-600 border-r sticky z-20 group-hover:bg-emerald-100 {$locale === 'ar' ? 'right-[40px]' : 'left-[40px]'} {row.employmentStatus === 'Remote Job' ? (rowIdx % 2 === 1 ? 'bg-orange-100' : 'bg-orange-50') : (rowIdx % 2 === 1 ? 'bg-slate-100' : 'bg-white')}">
@@ -3738,8 +3932,16 @@ title="Export salary data to Mudad Excel template"
 									</div>
 								</td>
 								<td class="px-4 py-3 font-semibold text-slate-900 border-r sticky z-20 group-hover:bg-emerald-100 {$locale === 'ar' ? 'right-[140px]' : 'left-[140px]'} {row.employmentStatus === 'Remote Job' ? (rowIdx % 2 === 1 ? 'bg-orange-100' : 'bg-orange-50') : (rowIdx % 2 === 1 ? 'bg-slate-100' : 'bg-white')}">
-									<span>{row.employeeName}</span>
+									<span>{employeeDisplayName(row, $locale)}</span>
 								</td>
+                                {#if savedStatementsOnly}
+                                    <td class="px-3 py-3 border-r w-[120px] text-center">
+                                        <button type="button" aria-expanded={expandedSalaryEntries.has(String(row.employeeId))} on:click={() => toggleSalaryEntry(String(row.employeeId))} class="px-3 py-1 rounded-lg bg-blue-50 text-blue-700 hover:bg-blue-100 text-xs font-bold whitespace-nowrap">
+                                            {$t(expandedSalaryEntries.has(String(row.employeeId)) ? 'reports.salaryHideEntry' : 'reports.salaryShowEntry')}
+                                        </button>
+                                    </td>
+                                    <td class="px-4 py-3 border-r w-[200px] text-slate-700">{financeSponsorName(String(row.employeeId), $locale)}</td>
+                                {/if}
 								<td class="px-4 py-3 border-r text-center text-sm font-mono text-slate-700 w-[130px] whitespace-nowrap {colVis.idNumber ? '' : 'hidden'}">
 									<!-- svelte-ignore a11y-no-static-element-interactions -->
 									<span
@@ -4052,6 +4254,15 @@ title="Export salary data to Mudad Excel template"
 									{computeRowSalary(row).netCash.toFixed(2)}
 								</td>
 							</tr>
+                            {#if savedStatementsOnly && expandedSalaryEntries.has(String(row.employeeId))}
+                                <tr>
+                                    <td colspan={tableEl?.tHead?.rows[0]?.cells.length || 1} class="p-4 bg-blue-50 border-b border-slate-200">
+                                        {#key `${row.employeeId}:${row.currentBranchId}`}
+                                            <SalaryStatementEntryPreview employeeContext={financeEmployeeContexts[String(row.employeeId)]} onCollapse={() => toggleSalaryEntry(String(row.employeeId))} employeeId={String(row.employeeId)} employeeName={employeeDisplayName(row, $locale)} branchId={Number(row.currentBranchId)} grossEarnings={computeRowSalary(row).gross} netSalary={computeRowSalary(row).netSalary} netBank={computeRowSalary(row).netBank} netCash={computeRowSalary(row).netCash} deductions={computeRowSalary(row).deductions} {startDate} {endDate} />
+                                        {/key}
+                                    </td>
+                                </tr>
+                            {/if}
 						{/each}
 					</tbody>
 					<!-- Excel-style column totals (sticky bottom) -->
@@ -4073,7 +4284,7 @@ title="Export salary data to Mudad Excel template"
 						{/if}
 						<!-- Saved statement open: only Update (when edited) and Close. Save/Load come back after Close. -->
 						{#if isLoadedFromSaved}
-							{#if currentSavedStatementId && canEditSalaryStatement}
+							{#if !savedStatementsOnly && currentSavedStatementId && canEditSalaryStatement}
 							<button type="button" on:click={openAddEmployeeModal} disabled={saveBusy}
 								title={$t('hr.salaryStatement.addEmployeeTooltip')}
 								class="px-3 py-1 rounded bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-[11px] font-bold shadow-sm">
@@ -4130,8 +4341,20 @@ title="Export salary data to Mudad Excel template"
 			</div>
 		{/if}
 	</div>
+	{:else if financeTab === 'accounts'}
+		<SalaryStatementAccounts />
+	{/if}
+	{#if savedStatementsOnly && entriesGenerationRequested}
+		{#key entriesGenerationId}
+			<div class="flex-col flex-1 min-h-0" style:display={financeTab === 'statement' || financeTab === 'accounts' ? 'none' : 'flex'}>
+				<SalaryStatementCategoryEntries employeeContexts={financeEmployeeContexts} category={financeTab === 'statement' || financeTab === 'accounts' ? 'booking' : financeTab} rows={financeCategoryRows()} {startDate} {endDate} onGenerated={entryGenerationCompleted} savedBundle={savedEntryBundle} onSavedBundleChange={(bundle) => savedEntryBundle = bundle} />
+			</div>
+		{/key}
+	{/if}
 </div>
 
+
+{/if}
 
 <!-- Mudad Exporter Modal -->
 {#if showMudadModal}
@@ -4537,12 +4760,16 @@ class="px-5 py-2 rounded-lg bg-orange-600 hover:bg-orange-700 disabled:opacity-5
 {/if}
 
 <!-- Load Salary Statement Modal -->
-{#if showLoadModal}
-	<div class="fixed inset-0 z-[100] flex items-center justify-center bg-black/50" on:click|self={() => (showLoadModal = false)}>
-		<div class="bg-white rounded-lg shadow-2xl w-full max-w-3xl max-h-[80vh] flex flex-col p-5 border-2 border-blue-500" role="dialog">
+{#if showLoadModal || (savedStatementsOnly && showSavedStatementsList)}
+	<div class={savedStatementsOnly ? 'h-full p-6 bg-slate-50' : 'fixed inset-0 z-[100] flex items-center justify-center bg-black/50'} dir={$locale === 'ar' ? 'rtl' : 'ltr'} on:click|self={() => { if (!savedStatementsOnly) showLoadModal = false; }}>
+		<div class={savedStatementsOnly ? 'bg-white rounded-lg shadow w-full h-full flex flex-col p-5 border border-slate-200' : 'bg-white rounded-lg shadow-2xl w-full max-w-3xl max-h-[80vh] flex flex-col p-5 border-2 border-blue-500'} role={savedStatementsOnly ? 'region' : 'dialog'} aria-label={$t('reports.savedSalaryStatements')}>
 			<div class="flex items-center justify-between mb-4">
-				<h3 class="text-lg font-bold text-slate-900">{$t('hr.salaryStatement.loadModalTitle')}</h3>
-				<button type="button" class="text-slate-400 hover:text-slate-700 text-xl leading-none" on:click={() => (showLoadModal = false)}>Ã—</button>
+				<h3 class="text-lg font-bold text-slate-900">{$t(savedStatementsOnly ? 'reports.savedSalaryStatements' : 'hr.salaryStatement.loadModalTitle')}</h3>
+				<button type="button" aria-label={$t('common.close')} class="text-slate-400 hover:text-slate-700" on:click={() => { if (savedStatementsOnly) windowManager.closeWindow(windowId); else showLoadModal = false; }}>
+					<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 6l12 12M6 18L18 6" />
+					</svg>
+				</button>
 			</div>
 			<div class="flex-1 overflow-auto">
 				{#if loadListLoading}
@@ -4577,7 +4804,7 @@ class="px-5 py-2 rounded-lg bg-orange-600 hover:bg-orange-700 disabled:opacity-5
 										<button type="button" on:click={() => selectAndLoadStatement(it.id)}
 											disabled={loadingStatementId !== null}
 											class="px-3 py-1 rounded bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-bold">
-											{loadingStatementId === it.id ? $t('hr.salaryStatement.loading') : $t('hr.salaryStatement.load')}
+											{loadingStatementId === it.id ? $t('hr.salaryStatement.loading') : $t(savedStatementsOnly ? 'reports.salaryStatementDetails' : 'hr.salaryStatement.load')}
 										</button>
 									</td>
 								</tr>
@@ -4590,7 +4817,7 @@ class="px-5 py-2 rounded-lg bg-orange-600 hover:bg-orange-700 disabled:opacity-5
 				{/if}
 			</div>
 			<div class="mt-4 flex justify-end">
-				<button type="button" on:click={() => (showLoadModal = false)}
+				<button type="button" on:click={() => { if (savedStatementsOnly) windowManager.closeWindow(windowId); else showLoadModal = false; }}
 					class="px-4 py-2 rounded bg-slate-200 hover:bg-slate-300 text-slate-700 text-sm font-semibold">{$t('hr.salaryStatement.close')}</button>
 			</div>
 		</div>
@@ -4729,7 +4956,7 @@ class="px-5 py-2 rounded-lg bg-orange-600 hover:bg-orange-700 disabled:opacity-5
 			<div class="flex items-center justify-between px-6 py-2 bg-orange-50 border-b-2 border-orange-400 flex-shrink-0">
 				<div>
 					<p class="text-[10px] font-semibold text-orange-500 uppercase tracking-wider">{$t('hr.salaryStatement.editEmployeeValues')}</p>
-					<p class="font-bold text-base text-green-800">{empEditRow.employeeName}</p>
+					<p class="font-bold text-base text-green-800">{employeeDisplayName(empEditRow, $locale)}</p>
 					<p class="text-[10px] text-green-600">{empEditRow.employeeId}</p>
 					<span class="inline-block mt-0.5 px-2 py-0.5 rounded-full text-[10px] font-semibold {empEditRow.employmentStatus === 'Resigned' ? 'bg-red-100 text-red-700' : empEditRow.employmentStatus === 'Remote Job' ? 'bg-orange-100 text-orange-700' : empEditRow.employmentStatus === 'Vacation' ? 'bg-blue-100 text-blue-700' : 'bg-green-100 text-green-700'}">{empEditRow.employmentStatus ?? '-'}</span>
 				</div>

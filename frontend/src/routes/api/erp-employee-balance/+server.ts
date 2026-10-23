@@ -58,8 +58,9 @@ export const POST: RequestHandler = async ({ request }) => {
 
 		const emp = empData.recordset[0];
 
-		// Query 2: Get ledger balance via employee code → ledger code link (uses alias e)
-		const balSql = `SELECT l.LedgerID, l.LedgerCode, l.LedgerName, SUM(d.Debit) as TotalDebit, SUM(d.Credit) as TotalCredit, SUM(d.Debit-d.Credit) as NetBalance FROM Employees e JOIN AccLedgers l ON l.LedgerCode=e.EmployeeCode AND l.BranchID=e.BranchID JOIN AccTransactionMaster m ON m.BranchID=l.BranchID JOIN AccTransactionDetails d ON d.AccTransactionMasterID=m.AccTransactionMasterID AND d.BranchID=m.BranchID AND d.LedgerID=l.LedgerID WHERE e.EmployeeID=${empId} ${joinedBranchFilter} AND m.IsActive='True' GROUP BY l.LedgerID,l.LedgerCode,l.LedgerName`;
+		// Query 2: Resolve the explicit employee ledger ID; ledger codes can be duplicated.
+		// Keep the ledger even when it has no active transactions.
+		const balSql = `SELECT l.LedgerID, l.LedgerCode, l.LedgerName, COALESCE(t.TotalDebit,0) as TotalDebit, COALESCE(t.TotalCredit,0) as TotalCredit, COALESCE(t.NetBalance,0) as NetBalance FROM Employees e JOIN AccLedgers l ON l.LedgerID=e.AccLedgerID AND l.BranchID=e.BranchID OUTER APPLY (SELECT SUM(d.Debit) as TotalDebit, SUM(d.Credit) as TotalCredit, SUM(d.Debit-d.Credit) as NetBalance FROM AccTransactionDetails d JOIN AccTransactionMaster m ON m.AccTransactionMasterID=d.AccTransactionMasterID AND m.BranchID=d.BranchID AND m.IsActive='True' WHERE d.LedgerID=l.LedgerID AND d.BranchID=l.BranchID) t WHERE e.EmployeeID=${empId} ${joinedBranchFilter}`;
 
 		const balResp = await fetch(`${baseUrl}/query`, {
 			method: 'POST',
@@ -131,7 +132,9 @@ export const GET: RequestHandler = async ({ url }) => {
 		const safeQuery = query.replace(/'/g, "''");
 		const erpBranchId = conn.erp_branch_id;
 		const branchFilter = erpBranchId ? `AND BranchID = ${parseInt(erpBranchId)}` : '';
-		const searchSql = `SELECT TOP 50 EmployeeID, EmployeeName, EmployeeCode FROM Employees WHERE IsActive=1 ${branchFilter} AND (EmployeeName LIKE '%${safeQuery}%' OR EmployeeCode LIKE '%${safeQuery}%' OR CAST(EmployeeID AS NVARCHAR) LIKE '%${safeQuery}%') ORDER BY EmployeeName`;
+		// Empty searches preload the branch directory for instant client-side filtering.
+		const limit = query.trim() ? 'TOP 50 ' : '';
+		const searchSql = `SELECT ${limit}EmployeeID, EmployeeName, EmployeeCode FROM Employees WHERE IsActive=1 ${branchFilter} AND (EmployeeName LIKE '%${safeQuery}%' OR EmployeeCode LIKE '%${safeQuery}%' OR CAST(EmployeeID AS NVARCHAR) LIKE '%${safeQuery}%') ORDER BY EmployeeName`;
 
 		const resp = await fetch(`${baseUrl}/query`, {
 			method: 'POST',
@@ -145,6 +148,9 @@ export const GET: RequestHandler = async ({ url }) => {
 		}
 
 		const data = await resp.json();
+		if (!data.success) {
+			return json({ success: false, error: 'ERP employee directory query failed' }, { status: 502 });
+		}
 		return json({
 			success: true,
 			employees: data.recordset || [],

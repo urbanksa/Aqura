@@ -227,3 +227,11 @@ aqura-designer-standalone/
 
 # Local browser verification screenshots
 /artifacts/
+
+# Local Assistant verification scratch directories
+/.tmp-pytest/
+/scratch-vikin-release-ui-*/
+/tmp-outbox-tests-*/
+/tmp-release-check-*/
+/tmp-vikin-extension-package-*/
+/tmp_cp_basetemp_*/

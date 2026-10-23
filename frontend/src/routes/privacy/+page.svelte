@@ -3,6 +3,7 @@
     import { currentLocale, switchLocale } from '$lib/i18n';
     import { supabase } from '$lib/utils/supabase';
     import { formatPolicyContent } from '$lib/utils/formatPolicyContent';
+    import VikinExtensionPrivacy from '$lib/components/public/VikinExtensionPrivacy.svelte';
 
     let customContentEn = '';
     let customContentAr = '';
@@ -463,6 +464,10 @@
                 </div>
             </section>
         </div>
+        {/if}
+
+        {#if !customContent.includes('id="aqura-vikin-extension"')}
+            <VikinExtensionPrivacy {isAr} />
         {/if}
 
         <div class="mt-10 pt-6 border-t border-gray-200 text-center">
