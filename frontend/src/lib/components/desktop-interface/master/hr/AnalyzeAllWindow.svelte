@@ -8,6 +8,7 @@
 	import XLSX from 'xlsx-js-style';
 
 	export let windowId: string;
+	let activeTab: 'analysis' | 'issues' = 'analysis';
 
 	interface Employee {
 		id: string;
@@ -165,6 +166,18 @@
 			// Finally sort by employee ID
 			return String(a.employeeId).localeCompare(String(b.employeeId), undefined, { numeric: true });
 		});
+
+	$: issueGroups = filteredAnalysisData.map(row => ({
+		employeeId: row.employeeId,
+		employeeName: row.employeeName,
+		issues: datesInRange.flatMap(date => {
+			const status = row.dayByDay[date]?.status;
+			return ['Absent', 'Check-In Missing', 'Check-Out Missing'].includes(status)
+				? [{ date, status }]
+				: [];
+		})
+	})).filter(group => group.issues.length > 0);
+	$: attendanceIssues = issueGroups.flatMap(group => group.issues);
 
 	onMount(async () => {
 		await loadInitialData();
@@ -1000,6 +1013,25 @@
 </script>
 
 <div class="analyze-all-window flex flex-col h-full bg-slate-50">
+	<nav class="flex gap-2 px-6 pt-4 bg-white border-b border-slate-200" aria-label={$locale === 'ar' ? 'أقسام التحليل' : 'Analysis sections'} dir={$locale === 'ar' ? 'rtl' : 'ltr'}>
+		<button
+			type="button"
+			aria-pressed={activeTab === 'analysis'}
+			on:click={() => activeTab = 'analysis'}
+			class="px-5 py-3 text-sm font-bold border-b-2 transition-colors {activeTab === 'analysis' ? 'border-emerald-600 text-emerald-700' : 'border-transparent text-slate-500 hover:text-slate-700'}"
+		>
+			{$locale === 'ar' ? 'التحليل' : 'Analysis'}
+		</button>
+		<button
+			type="button"
+			aria-pressed={activeTab === 'issues'}
+			on:click={() => activeTab = 'issues'}
+			class="px-5 py-3 text-sm font-bold border-b-2 transition-colors {activeTab === 'issues' ? 'border-emerald-600 text-emerald-700' : 'border-transparent text-slate-500 hover:text-slate-700'}"
+		>
+			{$locale === 'ar' ? 'المشكلات' : 'Issues'}
+		</button>
+	</nav>
+	<div class="flex flex-col flex-1 min-h-0">
 	<!-- Header / Controls -->
 	<div class="p-6 bg-white border-b border-slate-200 shadow-sm space-y-4">
 		<div class="flex flex-wrap gap-4 items-end">
@@ -1081,6 +1113,7 @@
 		</div>
 	</div>
 
+	{#if activeTab === 'analysis'}
 	<!-- Results Table -->
 	{#if reminderNotice}
 		<div role="status" class="mx-6 mt-3 rounded-lg border p-3 text-sm {reminderNoticeError ? 'border-amber-300 bg-amber-50 text-amber-900' : 'border-emerald-300 bg-emerald-50 text-emerald-900'}">
@@ -1211,6 +1244,59 @@
 				<p class="text-slate-500 font-medium">{$t('hr.processFingerprint.analyzing_all_moment')}</p>
 			</div>
 		{/if}
+	</div>
+	{:else}
+		<section class="flex-1 min-h-0 p-6 overflow-auto" aria-label={$locale === 'ar' ? 'المشكلات' : 'Issues'} dir={$locale === 'ar' ? 'rtl' : 'ltr'}>
+			<div class="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+				<div class="p-4 border-b border-slate-200">
+					<h2 class="text-lg font-bold text-slate-700">{$locale === 'ar' ? 'المشكلات' : 'Issues'} ({attendanceIssues.length})</h2>
+					{#if datesInRange.length > 0}
+						<p class="mt-1 text-sm text-slate-500">{datesInRange[0].split('-').reverse().join('/')} – {datesInRange[datesInRange.length - 1].split('-').reverse().join('/')}</p>
+					{/if}
+				</div>
+				{#if loading}
+					<p class="p-8 text-center text-slate-500">{$t('hr.processFingerprint.analyzing_all_moment')}</p>
+				{:else if analysisData.length === 0}
+					<p class="p-8 text-center text-slate-500">{$locale === 'ar' ? 'حمّل التحليل للفترة المطلوبة لعرض المشكلات.' : 'Load analysis for the required period to see issues.'}</p>
+				{:else if attendanceIssues.length === 0}
+					<p class="p-8 text-center text-slate-500">{$locale === 'ar' ? 'لا يوجد غياب أو تسجيل دخول أو خروج مفقود ضمن النتائج الحالية.' : 'No absences or missing check-ins or check-outs in the current results.'}</p>
+				{:else}
+					<div class="overflow-x-auto">
+						<table class="w-full text-sm text-start">
+							<thead class="bg-slate-50 text-slate-600">
+								<tr>
+									<th scope="col" class="px-4 py-3 text-start">#</th>
+									<th scope="col" class="px-4 py-3 text-start">{$locale === 'ar' ? 'التاريخ' : 'Date'}</th>
+									<th scope="col" class="px-4 py-3 text-start">{$t('hr.employeeId')}</th>
+									<th scope="col" class="px-4 py-3 text-start">{$t('hr.fullName')}</th>
+									<th scope="col" class="px-4 py-3 text-start">{$locale === 'ar' ? 'المشكلة' : 'Issue'}</th>
+								</tr>
+							</thead>
+							<tbody class="divide-y divide-slate-200">
+								{#each issueGroups as group, employeeIndex (group.employeeId)}
+									<tr class="bg-emerald-50">
+										<th scope="rowgroup" colspan="5" class="px-4 py-3 text-start font-bold text-emerald-800">
+											{employeeIndex + 1}. {group.employeeName} · {group.employeeId}
+											<span class="ms-2 text-xs font-medium">({group.issues.length} {$locale === 'ar' ? 'مشكلات' : 'issues'})</span>
+										</th>
+									</tr>
+								{#each group.issues as issue, index (issue.date)}
+									<tr class="even:bg-slate-50">
+										<td class="px-4 py-3 text-slate-500">{index + 1}</td>
+										<td class="px-4 py-3 whitespace-nowrap">{issue.date.split('-').reverse().join('/')}</td>
+										<td class="px-4 py-3 font-mono">{group.employeeId}</td>
+										<td class="px-4 py-3 font-semibold text-slate-900">{group.employeeName}</td>
+										<td class="px-4 py-3 font-semibold text-red-700">{getStatusLabel(issue.status)}</td>
+									</tr>
+								{/each}
+								{/each}
+							</tbody>
+						</table>
+					</div>
+				{/if}
+			</div>
+		</section>
+	{/if}
 	</div>
 </div>
 

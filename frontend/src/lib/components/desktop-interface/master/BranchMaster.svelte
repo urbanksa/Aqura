@@ -82,7 +82,7 @@
 		try {
 			const { data, error } = await supabase
 				.from('branches')
-				.select('*, company_master(name_en, name_ar)')
+				.select('*, company_master!branches_company_id_fkey(name_en, name_ar)')
 				.order('created_at', { ascending: false });
 			
 			const loadTime = Math.round(performance.now() - startTime);

@@ -3029,12 +3029,19 @@
 	<!-- Sticky Bottom Summary Section -->
 	{#if punchPairs.length > 0}
 		{@const completePairs = punchPairs.filter(p => p.checkInTxn && p.checkOutTxn)}
-		{@const incompletePairs = punchPairs.filter(p => (p.checkInMissing || p.checkOutMissing) && !p.isEmptyDate)}
-		{@const emptyDates = punchPairs.filter(p => p.isEmptyDate)}
-		{@const officialDayOffs = emptyDates.filter(d => isOfficialDayOff(d.checkInDate))}
-		{@const officialHolidayDates = emptyDates.filter(d => isOfficialHoliday(d.checkInDate))}
-		{@const specificDayOffs = emptyDates.filter(d => isSpecificDayOff(d.checkInDate))}
-		{@const unapprovedLeaves = emptyDates.filter(d => !isOfficialDayOff(d.checkInDate) && !isOfficialHoliday(d.checkInDate) && !isSpecificDayOff(d.checkInDate))}
+		{@const totalWorkedDays = groupedPunchPairs.filter(group => group.pairs.some((pair: any) => pair.checkInTxn && pair.checkOutTxn)).length}
+		{@const officialLeaveDays = groupedPunchPairs.filter(group => isOfficialDayOff(group.date) || isOfficialHoliday(group.date))}
+		{@const expectedWorkDays = groupedPunchPairs.filter(group =>
+			!isOfficialDayOff(group.date) && !isOfficialHoliday(group.date) &&
+			!group.pairs.some((pair: any) => pair.isVacationDate) &&
+			getRequiredWorkingMinutesForDate(group.date) > 0
+		)}
+		{@const leaveDays = expectedWorkDays.filter(group => group.pairs.every((pair: any) => pair.isEmptyDate))}
+		{@const approvedLeaves = leaveDays.filter(group => getSpecificDayOff(group.date)?.approval_status === 'approved')}
+		{@const unapprovedLeaves = leaveDays.filter(group => getSpecificDayOff(group.date)?.approval_status !== 'approved')}
+		{@const incompleteDays = groupedPunchPairs.filter(group => group.pairs.some((pair: any) =>
+			(pair.checkInMissing || pair.checkOutMissing) && !pair.isEmptyDate
+		))}
 		{@const totalWorkedMinutes = completePairs.reduce((sum, p) => {
 			if (!p.workedTime) return sum;
 			const [hours, mins] = p.workedTime.split(':').map(Number);
@@ -3042,12 +3049,9 @@
 		}, 0)}
 		{@const totalWorkedHours = Math.floor(totalWorkedMinutes / 60)}
 		{@const totalWorkedMins = totalWorkedMinutes % 60}
-		{@const totalLateMinutes = completePairs.reduce((sum, p) => sum + (p.checkInEarlyLateTime?.late || 0), 0)}
+		{@const totalLateMinutes = punchPairs.reduce((sum, p) => sum + (p.checkInEarlyLateTime?.late || 0), 0)}
 		{@const totalLateHours = Math.floor(totalLateMinutes / 60)}
 		{@const totalLateMins = totalLateMinutes % 60}
-		{@const totalEarlyMinutes = completePairs.reduce((sum, p) => sum + (p.lateEarlyTime?.early || 0), 0)}
-		{@const totalEarlyHours = Math.floor(totalEarlyMinutes / 60)}
-		{@const totalEarlyMins = totalEarlyMinutes % 60}
 		{@const totalRequiredMinutes = groupedPunchPairs.reduce((sum, group) => {
 			const specificDayOff = getSpecificDayOff(group.date);
 			const isExcusedNonWorkingDay = isOfficialDayOff(group.date) ||
@@ -3056,6 +3060,19 @@
 				group.pairs.some((pair: any) => pair.isVacationDate);
 			return sum + (isExcusedNonWorkingDay ? 0 : getRequiredWorkingMinutesForDate(group.date));
 		}, 0)}
+		{@const totalUnderworkedMinutes = groupedPunchPairs.reduce((sum, group) => {
+			if (isOfficialDayOff(group.date) || isOfficialHoliday(group.date) ||
+				getSpecificDayOff(group.date)?.approval_status === 'approved' ||
+				group.pairs.some((pair: any) => pair.isVacationDate)) return sum;
+			const workedMinutes = group.pairs.reduce((worked: number, pair: any) => {
+				if (!pair.workedTime) return worked;
+				const [hours, minutes] = pair.workedTime.split(':').map(Number);
+				return worked + hours * 60 + minutes;
+			}, 0);
+			return sum + Math.max(0, getRequiredWorkingMinutesForDate(group.date) - workedMinutes);
+		}, 0)}
+		{@const totalUnderworkedHours = Math.floor(totalUnderworkedMinutes / 60)}
+		{@const totalUnderworkedMins = totalUnderworkedMinutes % 60}
 		{@const totalVarianceMinutes = totalWorkedMinutes - totalRequiredMinutes}
 		{@const varianceHours = Math.floor(Math.abs(totalVarianceMinutes) / 60)}
 		{@const varianceMins = Math.abs(totalVarianceMinutes) % 60}
@@ -3065,23 +3082,25 @@
 				<h3 class="analysis-summary-title text-[10px] font-black text-slate-500 uppercase tracking-tighter">{$t('hr.processFingerprint.summary_for').replace('{startDate}', startDate).replace('{endDate}', endDate)}</h3>
 				<div class="analysis-total-days flex items-center gap-1.5 bg-white px-2 py-0.5 rounded border border-slate-200 shadow-sm">
 					<span class="text-[9px] font-bold text-slate-400 uppercase">{$t('hr.processFingerprint.total_days')}</span>
-					<span class="text-[10px] font-black text-slate-900 leading-none">{punchPairs.length}</span>
+					<span class="text-[10px] font-black text-slate-900 leading-none">{groupedPunchPairs.length}</span>
 				</div>
 			</div>
 			
-			<div class="analysis-summary-stats grid grid-cols-5 gap-2">
+			<div class="analysis-summary-stats grid grid-cols-3 xl:grid-cols-7 gap-2">
 				<!-- Mini Stats Row -->
 				{#each [
-					{ label: $t('hr.processFingerprint.complete_days'), val: completePairs.length, color: 'bg-green-500' },
-					{ label: $t('hr.processFingerprint.incomplete_days'), val: incompletePairs.length, color: 'bg-yellow-500' },
-					{ label: $t('hr.processFingerprint.days_off'), val: officialDayOffs.length + specificDayOffs.length, color: 'bg-blue-500' },
-					{ label: $t('hr.shift.tabs.official_holidays'), val: officialHolidayDates.length, color: 'bg-indigo-500' },
+					{ label: $locale === 'ar' ? 'إجمالي أيام العمل الفعلية' : 'Total worked days', val: totalWorkedDays, color: 'bg-teal-500' },
+					{ label: $locale === 'ar' ? 'أيام العمل المتوقعة' : 'Expected work days', val: expectedWorkDays.length, color: 'bg-green-500' },
+					{ label: $locale === 'ar' ? 'إجمالي الإجازات باستثناء الرسمية' : 'Total leave excluding official leave', val: leaveDays.length, color: 'bg-blue-500' },
+					{ label: $locale === 'ar' ? 'الإجازات الرسمية' : 'Official leave', val: officialLeaveDays.length, color: 'bg-indigo-500' },
+					{ label: $t('hr.processFingerprint.incomplete_days'), val: incompleteDays.length, color: 'bg-yellow-500' },
+					{ label: $locale === 'ar' ? 'الإجازات المعتمدة' : 'Approved leave', val: approvedLeaves.length, color: 'bg-emerald-500' },
 					{ label: $t('hr.processFingerprint.unapproved_leaves'), val: unapprovedLeaves.length, color: 'bg-red-500' }
 				] as item}
 					<div class="analysis-summary-stat bg-white border border-slate-200 rounded p-1.5 flex flex-col items-center">
-						<div class="flex items-center gap-1 mb-0.5">
-							<span class="w-1.5 h-1.5 rounded-full {item.color}"></span>
-							<span class="analysis-summary-label text-[8px] font-bold text-slate-400 uppercase leading-none truncate w-16">{item.label}</span>
+						<div class="flex items-center justify-center gap-1 mb-1 min-h-[24px]">
+							<span class="w-1.5 h-1.5 shrink-0 rounded-full {item.color}"></span>
+							<span class="analysis-summary-label text-[9px] font-bold text-slate-500 uppercase leading-tight text-center">{item.label}</span>
 						</div>
 						<span class="text-sm font-black text-slate-900 leading-none">{item.val}</span>
 					</div>
@@ -3095,14 +3114,14 @@
 					<span class="text-sm font-black text-white leading-none">{totalWorkedHours}{$t('common.h')} {totalWorkedMins}{$t('common.m')}</span>
 				</div>
 
-				<div class="flex-1 bg-white border border-slate-200 rounded p-1.5 flex items-center justify-between px-3">
-					<span class="text-[9px] font-bold text-slate-400 uppercase">{$t('hr.processFingerprint.late')}</span>
-					<span class="text-[10px] font-black text-red-600">{totalLateHours}{$t('common.h')} {totalLateMins}{$t('common.m')}</span>
+				<div class="flex-1 bg-white border border-slate-200 rounded p-1.5 flex items-center justify-between gap-2 px-3">
+					<span class="text-[9px] font-bold text-slate-400 uppercase">{$locale === 'ar' ? 'ساعات العمل الناقصة' : 'Underworked hours'}</span>
+					<span class="text-[10px] font-black text-red-600 whitespace-nowrap">{totalUnderworkedHours}{$t('common.h')} {totalUnderworkedMins}{$t('common.m')}</span>
 				</div>
 
 				<div class="flex-1 bg-white border border-slate-200 rounded p-1.5 flex items-center justify-between px-3">
-					<span class="text-[9px] font-bold text-slate-400 uppercase">{$t('hr.processFingerprint.early')}</span>
-					<span class="text-[10px] font-black text-orange-600">{totalEarlyHours}{$t('common.h')} {totalEarlyMins}{$t('common.m')}</span>
+					<span class="text-[9px] font-bold text-slate-400 uppercase">{$locale === 'ar' ? 'إجمالي التأخير' : 'Total late'}</span>
+					<span class="text-[10px] font-black text-red-600">{totalLateHours}{$t('common.h')} {totalLateMins}{$t('common.m')}</span>
 				</div>
 
 				<div class="flex-1 bg-white border border-slate-200 rounded p-1.5 flex items-center justify-between px-3">
@@ -3670,7 +3689,7 @@
 
 		.employee-mobile-mode :global(.analysis-summary-stats) {
 			display: grid;
-			grid-template-columns: repeat(5, minmax(0, 1fr));
+			grid-template-columns: repeat(3, minmax(0, 1fr));
 			gap: 0.2rem;
 		}
 
